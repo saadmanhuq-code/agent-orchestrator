@@ -46,6 +46,7 @@ import type { TerminalTarget } from "../../types/terminal";
 import type { AgentSwitchSummary, WorkspaceSession } from "../../types/workspace";
 import { AgentSwitchProgressTrack } from "../AgentSwitchProgressTrack";
 import { ChatWorkspace } from "./ChatWorkspace";
+import { providerOwnsApprovalMode } from "./TurnSettingsBar";
 
 export interface ConversationWorkState {
 	controllerBusy: boolean;
@@ -313,11 +314,9 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 	);
 	// A provider config catalog may cover only model, only mode, or both.
 	// Suppress native controls only for dimensions the provider catalog replaces;
-	// a model-only catalog must not hide the Approvals control.
+	// Cursor's agent/plan/ask execution modes must not hide Approvals.
 	const providerOptions = configOptions.options ?? [];
-	const hasProviderMode = providerOptions.some(
-		(option) => option.category === "mode" || option.id === "mode",
-	);
+	const hasProviderApprovalMode = providerOwnsApprovalMode(providerOptions);
 	const hasProviderModel = providerOptions.some(
 		(option) => option.category === "model" || option.id === "model",
 	);
@@ -522,7 +521,7 @@ export const SessionChatSurface = memo(function SessionChatSurface({
 				openingShell={openingShell}
 				shellError={shellError}
 				models={models}
-				onChooseSettings={hasProviderMode ? undefined : commands.chooseSettings}
+				onChooseSettings={hasProviderApprovalMode ? undefined : commands.chooseSettings}
 				onRememberPermissions={can(renderSnapshot, "config_options") && !configOptions.loaded
 					? undefined : projectPermissions.remember}
 				rememberPermissionsPending={projectPermissions.pending}

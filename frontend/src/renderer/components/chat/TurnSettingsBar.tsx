@@ -243,7 +243,15 @@ export function TurnSettingsBar({
 										key={mode}
 										active={mode === (settings.approvalMode ?? "default")}
 										radio
-										onSelect={() => onChange({ ...settings, approvalMode: mode })}
+										onSelect={() => {
+											if (
+												approvalChangeNeedsRestart(harness, settings.approvalMode, mode) &&
+												!window.confirm("Restart chat with the new permission mode?")
+											) {
+												return;
+											}
+											onChange({ ...settings, approvalMode: mode });
+										}}
 										className={cn("text-xs")}
 									>
 										<span
@@ -830,6 +838,31 @@ function optionIsEnabled(option: ChatConfigOption): boolean {
 
 function choiceIsEnabled(choice: ChatConfigOption["choices"][number] | undefined): boolean {
 	return Boolean(choice && /(?:^|[\s_-])(on|enabled|true)(?:[\s_-]|$)/i.test(`${choice.name} ${choice.value}`));
+}
+
+/**
+ * True when the live provider catalog already exposes AO approval policies
+ * (Claude's acceptEdits/auto/bypassPermissions). False for execution-only mode
+ * catalogs such as Cursor's agent/plan/ask — those keep AO's Approvals control.
+ */
+export function providerOwnsApprovalMode(options: ChatConfigOption[] | undefined): boolean {
+	return Boolean(partitionConfigOptions(options ?? []).mode);
+}
+
+/** Cursor (and similar) bake auto/bypass into process flags; confirm before restart. */
+export function approvalChangeNeedsRestart(
+	harness: string | undefined,
+	from: ApprovalMode | undefined,
+	to: ApprovalMode,
+): boolean {
+	if (harness !== "cursor") return false;
+	const current = from ?? "default";
+	if (current === to) return false;
+	return isProcessBoundApproval(current) || isProcessBoundApproval(to);
+}
+
+function isProcessBoundApproval(mode: ApprovalMode): boolean {
+	return mode === "auto" || mode === "bypass-permissions";
 }
 
 function partitionConfigOptions(options: ChatConfigOption[]): {
