@@ -63,10 +63,11 @@ func TestCollectorRegistersFinalizesAndReactivatesSource(t *testing.T) {
 // installed Windows usage-ingestion gap: ~/.claude/projects (or ~/.codex) can
 // be an NTFS junction to another volume (a common disk-space relocation), and
 // filepath.EvalSymlinks fails to walk any path below the junction boundary
-// even though ordinary file APIs open the same path without issue. Before the
-// resolveProviderPath fallback, validateSourcePath treated every transcript
-// under such a root as artifact_missing, so no usage_sources row — and
-// therefore no model_usage_events — was ever created for real sessions.
+// even though ordinary file APIs open the same path without issue. Before
+// resolveProviderPath switched to native handle-based resolution,
+// validateSourcePath treated every transcript under such a root as
+// artifact_missing, so no usage_sources row — and therefore no
+// model_usage_events — was ever created for real sessions.
 func TestCollectorRegistersSourceThroughWindowsJunctionRoot(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("NTFS junctions are a Windows-specific reproduction of this bug")
@@ -105,6 +106,48 @@ func TestCollectorRegistersSourceThroughWindowsJunctionRoot(t *testing.T) {
 	if len(sources) != 1 || sources[0].State != domain.UsageSourceActive {
 		t.Fatalf("expected exactly one active usage source registered through the junction, got %+v", sources)
 	}
+}
+
+// TestCollectorRejectsInRootJunctionEscapingAllowedRoot is the negative
+// counterpart to TestCollectorRegistersSourceThroughWindowsJunctionRoot: a
+// junction whose lexical path lies inside the allowed root but whose
+// physical target lies outside it must still be rejected. resolveProviderPath
+// must resolve both the candidate and the root to their true physical path
+// (via GetFinalPathNameByHandle) and compare those, not fall back to the
+// unresolved lexical path on failure — a lexical fallback would let this
+// exact escape through, since "<root>/escape-project/..." reads as inside
+// root even though it physically is not.
+func TestCollectorRejectsInRootJunctionEscapingAllowedRoot(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("NTFS junctions are a Windows-specific reproduction of this bug")
+	}
+
+	allowedRoot := filepath.Join(t.TempDir(), "projects")
+	mustNoError(t, os.MkdirAll(allowedRoot, 0o700))
+
+	outsideTarget := filepath.Join(t.TempDir(), "outside-target")
+	mustNoError(t, os.MkdirAll(outsideTarget, 0o700))
+	writeUsageFixture(t, filepath.Join(outsideTarget, "native-claude-2.jsonl"), "{}\n")
+
+	junctionInRoot := filepath.Join(allowedRoot, "escape-project")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", junctionInRoot, outsideTarget).CombinedOutput(); err != nil {
+		t.Skipf("could not create NTFS junction fixture (%v): %s", err, out)
+	}
+	hookPath := filepath.Join(junctionInRoot, "native-claude-2.jsonl")
+
+	store := collectorTestStore(t)
+	session := collectorTestSession(t, store, domain.HarnessClaudeCode, "native-claude-2", false)
+	collector := NewCollector(store, SourceRoots{ClaudeProjects: allowedRoot}, nil)
+
+	if err := collector.RecordHook(context.Background(), session.ID, HookSignal{
+		Harness:         domain.HarnessClaudeCode,
+		Event:           "session-start",
+		NativeSessionID: "native-claude-2",
+		TranscriptPath:  hookPath,
+	}); err == nil {
+		t.Fatal("in-root junction escape accepted")
+	}
+	assertNoUsageSourcesForSession(t, store, session.ID)
 }
 
 func TestCollectorPersistsOnlyCanonicalClaudeProviderHints(t *testing.T) {
