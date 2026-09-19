@@ -70,6 +70,14 @@ func validateCodexDirectoryAncestors(path string) error {
 		if attrErr != nil || attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 || attributes&windows.FILE_ATTRIBUTE_DIRECTORY == 0 {
 			return errors.New("codex directory has an unsafe ancestor")
 		}
+		if parent := filepath.Dir(current); parent == current {
+			// Volume root. A stock Windows install has the root owned by TrustedInstaller and lets Authenticated
+			// Users add a NEW top-level folder (FILE_ADD_SUBDIRECTORY). Neither lets anyone replace or rename an
+			// existing child such as C:\Users, and every directory below the root is still checked above, so the
+			// root's owner and ACL are not evaluated. Without this, Codex account storage is "unsafe" on every
+			// default Windows machine (seen on SMH-PC, 2026-09-19: account_storage_unsafe).
+			return nil
+		}
 		handle, info, _, ownerTrusted, aclSafe, openErr := openCodexWindowsPath(current, true, false)
 		if openErr != nil {
 			return errors.New("codex directory ancestor could not be verified")
