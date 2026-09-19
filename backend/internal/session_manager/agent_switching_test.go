@@ -2015,6 +2015,68 @@ func TestCaptureSourceTranscriptFactRequiresProviderLocator(t *testing.T) {
 	}
 }
 
+// TestCaptureSourceTranscriptFactIncludesTailThroughRelocatedProjectsRoot is
+// the production caller-chain reproduction of the exact ao-native-5 bug that
+// the isolated safeNativeTranscriptPath tests cannot catch.
+// captureSourceTranscriptFact resolves the located (lexical) transcript path
+// to its physical form once, then hands that already-physical path to
+// readNativeTranscriptTailWithOpen, which calls safeNativeTranscriptPath on
+// it a second time (to normalize/verify before opening) and a third time
+// (to close the open/use race right before reading) -- both times comparing
+// the now-physical candidate against the still-unresolved
+// configDir/projects. A single-call test can never observe this, because
+// the defect is specifically in what happens when this function's own
+// return value is fed back into it.
+func TestCaptureSourceTranscriptFactIncludesTailThroughRelocatedProjectsRoot(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("NTFS junctions are a Windows-specific reproduction of this bug")
+	}
+
+	root := t.TempDir()
+	configDir := filepath.Join(root, "provider")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	relocatedTarget := filepath.Join(root, "relocated-projects")
+	transcript := filepath.Join(relocatedTarget, "encoded-project", "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcript, []byte("{\"event\":\"final source record\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	junction := filepath.Join(configDir, "projects")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", junction, relocatedTarget).CombinedOutput(); err != nil {
+		t.Skipf("could not create NTFS junction fixture (%v): %s", err, out)
+	}
+
+	locatedPath := filepath.Join(junction, "encoded-project", "session.jsonl")
+	agent := &switchTestAgent{
+		configDir: configDir,
+		available: map[string]ports.NativeSessionAvailability{},
+		locateTranscript: func(ports.NativeSessionRef) (string, bool, error) {
+			return locatedPath, true, nil
+		},
+	}
+	manager := New(Deps{})
+	got, status := manager.captureSourceTranscriptFact(
+		context.Background(),
+		agent,
+		domain.AgentNativeSession{NativeSessionID: "session-1", ConfigDir: configDir, Harness: domain.HarnessClaudeCode},
+		true,
+	)
+	if status != domain.AgentSwitchSourceTranscriptAvailable {
+		t.Fatalf("source transcript status = %q, want available", status)
+	}
+	if got == nil || got.Path == "" {
+		t.Fatalf("transcript fact = %+v, want a resolved path", got)
+	}
+	if got.Tail == "" || !strings.Contains(got.Tail, "final source record") {
+		t.Fatalf("transcript tail = %q, want the relocated transcript's content", got.Tail)
+	}
+}
+
 func TestCaptureSourceTranscriptFactRejectsEmptyLocatedTranscript(t *testing.T) {
 	configDir := t.TempDir()
 	path := filepath.Join(configDir, "empty.jsonl")

@@ -1727,6 +1727,13 @@ func nativeTranscriptRoots(harness domain.AgentHarness) []string {
 	}
 }
 
+// pathUnder reports whether candidate is root itself or lies inside it,
+// purely by path-component comparison (no filesystem access).
+func pathUnder(root, candidate string) bool {
+	rel, err := filepath.Rel(root, candidate)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // safeNativeTranscriptPath resolves path to its canonical physical form and
 // verifies it lives inside one of harness's declared provider transcript
 // roots below configDir (see nativeTranscriptRoots), returning "" on any
@@ -1741,6 +1748,18 @@ func nativeTranscriptRoots(harness domain.AgentHarness) []string {
 // because the root and the candidate cross that exact same junction; an
 // escape planted anywhere else under configDir never passes the first,
 // lexical check at all.
+//
+// The lexical check also accepts path already being the declared root's own
+// resolved physical form. This function's callers re-validate a path this
+// function already returned once -- readNativeTranscriptTailWithOpen calls
+// it again immediately before opening, and a third time right before
+// reading, to close the open/use race -- and by then path is no longer the
+// pre-resolution candidate configDir/projects would lexically prefix; it is
+// already the far side of the relocation (see
+// TestCaptureSourceTranscriptFactIncludesTailThroughRelocatedProjectsRoot).
+// The anchor stays the same fixed, harness-declared root either way: this
+// recognizes a second valid *shape* of input to the identical check, it does
+// not widen which roots or which physical locations are trusted.
 func safeNativeTranscriptPath(ctx context.Context, path, configDir string, harness domain.AgentHarness) string {
 	if ctx.Err() != nil {
 		return ""
@@ -1759,12 +1778,17 @@ func safeNativeTranscriptPath(ctx context.Context, path, configDir string, harne
 	var providerRoot string
 	for _, root := range roots {
 		candidateRoot := filepath.Join(configDirClean, root)
-		rel, err := filepath.Rel(candidateRoot, clean)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			continue
+		if pathUnder(candidateRoot, clean) {
+			providerRoot = candidateRoot
+			break
 		}
-		providerRoot = candidateRoot
-		break
+		if resolvedRoot, err := resolveProviderPath(candidateRoot); err == nil && pathUnder(resolvedRoot, clean) {
+			providerRoot = candidateRoot
+			break
+		}
+		if ctx.Err() != nil {
+			return ""
+		}
 	}
 	if providerRoot == "" {
 		return ""
@@ -1784,8 +1808,7 @@ func safeNativeTranscriptPath(ctx context.Context, path, configDir string, harne
 	if ctx.Err() != nil {
 		return ""
 	}
-	rel, err := filepath.Rel(realProviderRoot, realPath)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if !pathUnder(realProviderRoot, realPath) {
 		return ""
 	}
 	info, err := os.Stat(realPath)
