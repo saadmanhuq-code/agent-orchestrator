@@ -64,6 +64,7 @@ type Manager interface {
 	ApplyReviewActivitySignal(ctx context.Context, reviewSessionID string, signal ActivitySignal) error
 	Submit(ctx context.Context, workerID domain.SessionID, runID string, verdict domain.ReviewVerdict, body, githubReviewID string) (domain.ReviewRun, error)
 	SubmitMany(ctx context.Context, workerID domain.SessionID, reviews []SubmittedReview) ([]domain.ReviewRun, error)
+	PublishReview(ctx context.Context, workerID domain.SessionID, req PublishRequest) (domain.ReviewRun, error)
 	List(ctx context.Context, workerID domain.SessionID) (reviewcore.SessionReviews, error)
 }
 
@@ -73,6 +74,7 @@ type Service struct {
 	store              Store
 	requester          ports.SCMReviewRequester
 	resolver           ports.SCMReviewResolver
+	publisher          ports.SCMReviewPublisher
 	lifecycle          Reducer
 	clock              func() time.Time
 	telemetry          ports.EventSink
@@ -126,6 +128,13 @@ func WithReviewRequester(requester ports.SCMReviewRequester) Option {
 // WithReviewResolver wires provider-backed review-thread resolution.
 func WithReviewResolver(resolver ports.SCMReviewResolver) Option {
 	return func(s *Service) { s.resolver = resolver }
+}
+
+// WithReviewPublisher wires native review-verdict publishing: AO's own SCM
+// provider identity posts the review directly, instead of the reviewer
+// shelling out to `gh api`/`glab`.
+func WithReviewPublisher(publisher ports.SCMReviewPublisher) Option {
+	return func(s *Service) { s.publisher = publisher }
 }
 
 // WithTelemetry records review outcomes.
@@ -615,6 +624,148 @@ type SubmittedReview struct {
 	Verdict        domain.ReviewVerdict
 	Body           string
 	GithubReviewID string
+}
+
+// PublishComment is one inline finding to attach to a natively published review.
+type PublishComment struct {
+	Path string
+	Line int
+	Body string
+}
+
+// PublishRequest is the input to PublishReview.
+type PublishRequest struct {
+	RunID    string
+	Verdict  domain.ReviewVerdict
+	Body     string
+	Comments []PublishComment
+}
+
+// PublishReview posts AO's review verdict to the pull request through AO's
+// own SCM provider identity — the ordinary builder credential already
+// configured for merge/observation, never the reviewer's own gh/glab
+// credentials and never a privileged guardian/owner identity — then records
+// the result exactly as SubmitMany does. This reuses SubmitMany's existing
+// idempotency, delivery, and telemetry path rather than inventing a second
+// review-completion lifecycle: calling PublishReview again for an
+// already-completed run skips publishing entirely and falls through to
+// SubmitMany's own idempotent re-submit check, so a retry can never produce a
+// second provider comment for the same run.
+func (s *Service) PublishReview(ctx context.Context, workerID domain.SessionID, req PublishRequest) (domain.ReviewRun, error) {
+	if workerID == "" {
+		return domain.ReviewRun{}, fmt.Errorf("%w: worker session id is required", ErrInvalid)
+	}
+	runID := strings.TrimSpace(req.RunID)
+	if runID == "" {
+		return domain.ReviewRun{}, fmt.Errorf("%w: review run id is required", ErrInvalid)
+	}
+	if s.publisher == nil {
+		return domain.ReviewRun{}, fmt.Errorf("%w: native review publishing is unavailable", ErrInvalid)
+	}
+	run, ok, err := s.store.GetReviewRun(ctx, runID)
+	if err != nil {
+		return domain.ReviewRun{}, err
+	}
+	if !ok {
+		return domain.ReviewRun{}, fmt.Errorf("%w: review run %q", ErrNotFound, runID)
+	}
+	if run.SessionID != workerID {
+		return domain.ReviewRun{}, fmt.Errorf("%w: review run %q does not belong to worker %q", ErrInvalid, runID, workerID)
+	}
+
+	// A run that already carries a publication id has already been posted to
+	// the provider (or was completed some other way, e.g. the GitHub gh-api
+	// flow). Skip straight to the existing submit path so a retry can never
+	// call the publisher a second time.
+	externalID := run.GithubReviewID
+	if run.Status == domain.ReviewRunRunning && externalID == "" {
+		if !req.Verdict.Valid() {
+			return domain.ReviewRun{}, fmt.Errorf("%w: verdict must be %q or %q", ErrInvalid, domain.VerdictApproved, domain.VerdictChangesRequested)
+		}
+		prs, err := s.store.ListPRsBySession(ctx, workerID)
+		if err != nil {
+			return domain.ReviewRun{}, err
+		}
+		pr, ok := selectRereviewPR(prs, run.PRURL)
+		if !ok {
+			return domain.ReviewRun{}, fmt.Errorf("%w: pull request %q is not tracked for worker %q", ErrNotFound, run.PRURL, workerID)
+		}
+		ref, err := publishReviewRef(pr)
+		if err != nil {
+			return domain.ReviewRun{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+		}
+		comments := make([]ports.SCMReviewPublishComment, 0, len(req.Comments))
+		for _, c := range req.Comments {
+			comments = append(comments, ports.SCMReviewPublishComment{Path: c.Path, Line: c.Line, Body: c.Body})
+		}
+		result, err := s.publisher.PublishReview(ctx, ports.SCMReviewPublishRequest{
+			PR:              ref,
+			RunID:           run.ID,
+			ExpectedHeadSHA: run.TargetSHA,
+			Verdict:         req.Verdict,
+			Summary:         req.Body,
+			Comments:        comments,
+		})
+		if err != nil {
+			switch {
+			case errors.Is(err, ports.ErrSCMHeadChanged), errors.Is(err, ports.ErrSCMUnsupported):
+				return domain.ReviewRun{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+			case errors.Is(err, ports.ErrSCMNotFound):
+				return domain.ReviewRun{}, fmt.Errorf("%w: %w", ErrNotFound, err)
+			}
+			return domain.ReviewRun{}, err
+		}
+		externalID = result.ExternalID
+	}
+
+	runs, err := s.SubmitMany(ctx, workerID, []SubmittedReview{{
+		RunID:          runID,
+		Verdict:        req.Verdict,
+		Body:           req.Body,
+		GithubReviewID: externalID,
+	}})
+	if err != nil {
+		return domain.ReviewRun{}, err
+	}
+	if len(runs) == 0 {
+		return domain.ReviewRun{}, fmt.Errorf("%w: no review result submitted", ErrInvalid)
+	}
+	return runs[0], nil
+}
+
+// publishReviewRef builds the provider-neutral PR reference for native
+// publish. It intentionally does not reuse reviewRequestRef's owner/name
+// split: that helper takes only the first path segment as Owner
+// (strings.SplitN(repo.Repo, "/", 2)), which is correct for a flat
+// "owner/repo" but wrong for a nested GitLab namespace like
+// "group/subgroup/repo" (it would treat "subgroup/repo" as the repo name).
+// Native publish must resolve the correct project path for nested
+// namespaces, so this splits on the LAST path segment instead, matching the
+// GitLab adapter's own splitOwnerRepo convention.
+func publishReviewRef(pr domain.PullRequest) (ports.SCMPRRef, error) {
+	repo := ports.SCMRepo{Provider: pr.Provider, Host: pr.Host, Repo: pr.Repo}
+	if repo.Provider == "" {
+		repo.Provider = providerFromPRURL(pr.URL)
+	}
+	if repo.Host == "" {
+		repo.Host = hostFromPRURL(pr.URL)
+	}
+	if repo.Repo != "" {
+		if idx := strings.LastIndex(repo.Repo, "/"); idx > 0 && idx < len(repo.Repo)-1 {
+			repo.Owner, repo.Name = repo.Repo[:idx], repo.Repo[idx+1:]
+		}
+	}
+	if repo.Provider == "github" && (repo.Owner == "" || repo.Name == "") {
+		owner, name := githubOwnerRepoFromPRURL(pr.URL)
+		repo.Owner, repo.Name = owner, name
+		if repo.Repo == "" && owner != "" && name != "" {
+			repo.Repo = owner + "/" + name
+		}
+	}
+	if pr.Number <= 0 || repo.Provider == "" || repo.Owner == "" || repo.Name == "" {
+		return ports.SCMPRRef{}, fmt.Errorf("invalid pull request reference")
+	}
+	return ports.SCMPRRef{Repo: repo, Number: pr.Number, URL: pr.URL}, nil
 }
 
 // Submit records a reviewer's result for a specific worker review pass.

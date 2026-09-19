@@ -23,8 +23,10 @@ func reviewTexts(spec LaunchSpec) (prompt, systemPrompt string) {
 
 Complete every review task in the queue autonomously. Do not ask the user whether to continue to the next PR, and do not stop after the first PR unless the provider or checkout is genuinely unusable for every queued task.
 
-Do these steps in order:
-1. For each PR below, post a separate review on that pull request and capture its id in one call. Post with `+"`gh api`"+` rather than `+"`gh pr review`"+`: it is the only way to attach inline comments, and its response carries the created review's id, so AO can tell the worker exactly which review to address. Send the review as a JSON body so the inline comments form a proper array of objects:
+Each task above is tagged [github] or [gitlab]. Post your review using the path that matches its tag.
+
+For a [github] pull request, do these two steps in order:
+1. Post a review on that pull request and capture its id in one call. Post with `+"`gh api`"+` rather than `+"`gh pr review`"+`: it is the only way to attach inline comments, and its response carries the created review's id, so AO can tell the worker exactly which review to address. Send the review as a JSON body so the inline comments form a proper array of objects:
 
     printf '%%s' '{ "event": "COMMENT", "body": "<summary>", "comments": [ { "path": "<file>", "line": <n>, "body": "<finding>" } ] }' | gh api --method POST repos/{owner}/{repo}/pulls/{number}/reviews --input - --jq '.id'
 
@@ -32,12 +34,20 @@ Do these steps in order:
 	   - Keep the JSON on one line and shell-escape any single quotes in review text before passing it to printf; do not use a heredoc because reviewer panes run through an interactive PTY.
    - Always use "event": "COMMENT": reviews are posted from the PR author's own account, and GitHub rejects both APPROVE and REQUEST_CHANGES on your own PR. State in the body whether you are requesting changes or approving; the machine-readable verdict goes to AO in step 2.
    - The printed number is the review id. If the call fails on the provider, leave the id empty.
-2. After every PR has its own GitHub review from step 1, record AO's bookkeeping for those already-posted reviews using one command. Pass JSON on stdin so nothing is ever written into the worktree (a file there could be committed onto the worker's branch). Include one object per PR/run from the queue:
+2. After every [github] PR has its own GitHub review from step 1, record AO's bookkeeping for those already-posted reviews using one command. Pass JSON on stdin so nothing is ever written into the worktree (a file there could be committed onto the worker's branch). Include one object per [github] PR/run from the queue:
 
     printf '%%s' '{ "reviews": [ { "runId": "<run-id>", "verdict": "<approved|changes_requested>", "githubReviewId": "<id-from-step-1-or-empty>", "body": "<your full review markdown>" } ] }' | ao review submit --session %s --reviews -
 
-Only if step 1 genuinely fails on the provider for a PR, still include that run in step 2 with an empty githubReviewId so the result is recorded.`,
-		spec.WorkerID, queueText, spec.WorkerID)
+   Only if step 1 genuinely fails on the provider for a PR, still include that run in step 2 with an empty githubReviewId so the result is recorded.
+
+For a [gitlab] merge request, AO posts the review natively — no `+"`gh`"+`/`+"`glab`"+` shell-out or GitLab credentials in this pane — so it is one step instead of two. Write the review body to a file, then run:
+
+    ao review publish --session %s --run <run-id> --verdict <approved|changes_requested> --body <path-to-review.md>
+
+   - Add `+"`--comments <path-to-comments.json>`"+` for inline findings: a JSON array of `+"`{\"path\": \"<file>\", \"line\": <n>, \"body\": \"<finding>\"}`"+` objects.
+   - This single call posts the review as an ordinary note on the merge request and records AO's bookkeeping together. It never calls GitLab's own approve action: an "approved" verdict is posted as a labeled, informational note, not a real GitLab approval.
+   - If it fails because the merge request's head moved, that run is stale — do not retry it blindly; wait for AO to re-trigger the review against the new head.`,
+		spec.WorkerID, queueText, spec.WorkerID, spec.WorkerID)
 	return prompt, systemPrompt
 }
 
@@ -53,12 +63,25 @@ Post your review as a comment on the pull request, stating clearly whether it ne
 
 func reviewQueueText(spec LaunchSpec) string {
 	if len(spec.ReviewQueue) <= 1 {
-		return fmt.Sprintf("\nReview task queue:\n* 1. %s (head commit %s, run %s)\n", spec.PRURL, spec.TargetSHA, spec.RunID)
+		return fmt.Sprintf("\nReview task queue:\n* 1. %s (head commit %s, run %s) [%s]\n", spec.PRURL, spec.TargetSHA, spec.RunID, promptProviderFromPRURL(spec.PRURL))
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "\nAO created %d review tasks for this worker session. Review every queued PR, then submit all results together.\n\nReview task queue:\n", len(spec.ReviewQueue))
 	for i, task := range spec.ReviewQueue {
-		fmt.Fprintf(&b, "* %d. %s (head commit %s, run %s)\n", i+1, task.PRURL, task.TargetSHA, task.RunID)
+		fmt.Fprintf(&b, "* %d. %s (head commit %s, run %s) [%s]\n", i+1, task.PRURL, task.TargetSHA, task.RunID, promptProviderFromPRURL(task.PRURL))
 	}
 	return b.String()
+}
+
+// promptProviderFromPRURL classifies a PR URL as "gitlab" or "github" for
+// prompt authoring only — a lightweight mirror of the SCM adapters' own
+// ParseRepository provider detection, kept local so this package does not
+// import the adapter packages. It defaults to "github" when the URL doesn't
+// look like a GitLab merge request, preserving the prompt's only supported
+// shape before native GitLab publishing existed.
+func promptProviderFromPRURL(prURL string) string {
+	if strings.Contains(prURL, "/-/merge_requests/") {
+		return "gitlab"
+	}
+	return "github"
 }

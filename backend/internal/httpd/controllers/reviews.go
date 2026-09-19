@@ -89,6 +89,21 @@ type SubmitReviewInput struct {
 	Reviews        []SubmitReviewItem `json:"reviews,omitempty" description:"Batched review results recorded by one reviewer CLI command."`
 }
 
+// PublishReviewCommentInput is one optional inline finding in a publish request.
+type PublishReviewCommentInput struct {
+	Path string `json:"path" description:"File path the comment is anchored to."`
+	Line int    `json:"line" description:"Line number the comment is anchored to."`
+	Body string `json:"body" description:"Inline comment text."`
+}
+
+// PublishReviewInput is the body of POST /api/v1/sessions/{sessionId}/reviews/publish.
+type PublishReviewInput struct {
+	RunID    string                      `json:"runId" description:"Review run id to publish and complete."`
+	Verdict  string                      `json:"verdict" description:"Review verdict: approved or changes_requested."`
+	Body     string                      `json:"body,omitempty" description:"Review body recorded by AO and posted to the provider. Required for changes_requested."`
+	Comments []PublishReviewCommentInput `json:"comments,omitempty" description:"Optional inline findings posted alongside the summary."`
+}
+
 // ReviewsController owns the session-scoped /reviews routes. A nil Svc returns 501.
 type ReviewsController struct {
 	Svc reviewsvc.Manager
@@ -106,6 +121,7 @@ func (c *ReviewsController) Register(r chi.Router) {
 	r.Post("/sessions/{sessionId}/reviews/restore", c.restore)
 	r.Post("/sessions/{sessionId}/reviews/switch", c.switchReviewer)
 	r.Post("/sessions/{sessionId}/reviews/submit", c.submit)
+	r.Post("/sessions/{sessionId}/reviews/publish", c.publish)
 }
 
 func (c *ReviewsController) activity(w http.ResponseWriter, r *http.Request) {
@@ -398,6 +414,33 @@ func (c *ReviewsController) submit(w http.ResponseWriter, r *http.Request) {
 		first = runs[0]
 	}
 	envelope.WriteJSON(w, http.StatusOK, ReviewRunResponse{Review: first, Reviews: runs})
+}
+
+func (c *ReviewsController) publish(w http.ResponseWriter, r *http.Request) {
+	if c.Svc == nil {
+		apispec.NotImplemented(w, r, "POST", "/api/v1/sessions/{sessionId}/reviews/publish")
+		return
+	}
+	var in PublishReviewInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		envelope.WriteAPIError(w, r, http.StatusBadRequest, "bad_request", "INVALID_BODY", "Invalid request body", nil)
+		return
+	}
+	comments := make([]reviewsvc.PublishComment, 0, len(in.Comments))
+	for _, item := range in.Comments {
+		comments = append(comments, reviewsvc.PublishComment{Path: item.Path, Line: item.Line, Body: item.Body})
+	}
+	run, err := c.Svc.PublishReview(r.Context(), sessionID(r), reviewsvc.PublishRequest{
+		RunID:    in.RunID,
+		Verdict:  domain.ReviewVerdict(in.Verdict),
+		Body:     in.Body,
+		Comments: comments,
+	})
+	if err != nil {
+		writeReviewError(w, r, err)
+		return
+	}
+	envelope.WriteJSON(w, http.StatusOK, ReviewRunResponse{Review: run})
 }
 
 func writeReviewError(w http.ResponseWriter, r *http.Request, err error) {

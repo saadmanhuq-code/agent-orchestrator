@@ -175,6 +175,100 @@ func TestReviewSubmitMissingRunIsUsageError(t *testing.T) {
 	}
 }
 
+func TestReviewPublishReadsBodyAndCommentsFiles(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"id":"run-1","verdict":"changes_requested","githubReviewId":"gl-note-1"}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	bodyFile := filepath.Join(t.TempDir(), "review.md")
+	if err := os.WriteFile(bodyFile, []byte("please fix"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	commentsFile := filepath.Join(t.TempDir(), "comments.json")
+	if err := os.WriteFile(commentsFile, []byte(`[{"path":"main.go","line":10,"body":"nit"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, errOut, err := executeCLI(t, aliveDeps(),
+		"review", "publish", "mer-1", "--run", "run-1", "--verdict", "changes_requested", "--body", bodyFile, "--comments", commentsFile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodPost || capture.path != "/api/v1/sessions/mer-1/reviews/publish" {
+		t.Fatalf("request = %s %s", capture.method, capture.path)
+	}
+	var req publishReviewRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if req.RunID != "run-1" || req.Verdict != "changes_requested" || req.Body != "please fix" {
+		t.Fatalf("request = %+v", req)
+	}
+	if len(req.Comments) != 1 || req.Comments[0].Path != "main.go" || req.Comments[0].Line != 10 {
+		t.Fatalf("comments = %+v", req.Comments)
+	}
+	if !strings.Contains(out, "published changes_requested review for mer-1") || !strings.Contains(out, "gl-note-1") {
+		t.Fatalf("stdout = %q", out)
+	}
+}
+
+func TestReviewPublishReadsBodyFromStdin(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"id":"run-1","verdict":"approved"}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	deps := aliveDeps()
+	deps.In = strings.NewReader("looks good")
+	_, errOut, err := executeCLI(t, deps, "review", "publish", "mer-1", "--run", "run-1", "--verdict", "approved", "--body", "-")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	var req publishReviewRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if req.Body != "looks good" {
+		t.Fatalf("body = %q, want the stdin contents", req.Body)
+	}
+}
+
+func TestReviewPublishMissingRunIsUsageError(t *testing.T) {
+	setConfigEnv(t)
+	_, _, err := executeCLI(t, aliveDeps(), "review", "publish", "mer-1", "--verdict", "approved")
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("exit code = %d, want 2 (usage); err=%v", got, err)
+	}
+}
+
+func TestReviewPublishMissingVerdictIsUsageError(t *testing.T) {
+	setConfigEnv(t)
+	_, _, err := executeCLI(t, aliveDeps(), "review", "publish", "mer-1", "--run", "run-1")
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("exit code = %d, want 2 (usage); err=%v", got, err)
+	}
+}
+
+func TestReviewPublishMissingWorkerIsUsageError(t *testing.T) {
+	setConfigEnv(t)
+	_, _, err := executeCLI(t, aliveDeps(), "review", "publish", "--run", "run-1", "--verdict", "approved")
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("exit code = %d, want 2 (usage); err=%v", got, err)
+	}
+}
+
+func TestReviewPublishUsesSessionFlag(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := reviewServer(t, http.StatusOK, `{"review":{"id":"run-7","verdict":"approved"}}`)
+	writeRunFileFor(t, cfg, srv)
+
+	if _, errOut, err := executeCLI(t, aliveDeps(), "review", "publish", "--session", "mer-7", "--run", "run-7", "--verdict", "approved"); err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.path != "/api/v1/sessions/mer-7/reviews/publish" {
+		t.Fatalf("path = %q, want mer-7", capture.path)
+	}
+}
+
 func TestReviewStopPostsCancel(t *testing.T) {
 	cfg := setConfigEnv(t)
 	srv, capture := reviewServer(t, http.StatusOK, `{}`)

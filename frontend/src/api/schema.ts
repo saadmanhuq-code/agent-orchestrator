@@ -1958,6 +1958,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{sessionId}/reviews/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish AO's review verdict to the pull request through AO's own SCM provider, then record it */
+        post: operations["publishReview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{sessionId}/reviews/rerequest": {
         parameters: {
             query?: never;
@@ -2876,6 +2893,24 @@ export interface components {
         ContainerReapConfig: {
             disabled?: boolean;
         };
+        ControllersPublishReviewCommentInput: {
+            /** @description Inline comment text. */
+            body: string;
+            /** @description Line number the comment is anchored to. */
+            line: number;
+            /** @description File path the comment is anchored to. */
+            path: string;
+        };
+        ControllersPublishReviewInput: {
+            /** @description Review body recorded by AO and posted to the provider. Required for changes_requested. */
+            body?: string;
+            /** @description Optional inline findings posted alongside the summary. */
+            comments?: components["schemas"]["ControllersPublishReviewCommentInput"][];
+            /** @description Review run id to publish and complete. */
+            runId: string;
+            /** @description Review verdict: approved or changes_requested. */
+            verdict: string;
+        };
         ControllersRequestRereviewRequest: {
             /** @description Tracked pull request URL. Required when the session has multiple PRs. */
             pullRequestUrl?: string;
@@ -3679,6 +3714,7 @@ export interface components {
             env?: {
                 [key: string]: string;
             };
+            escalateInputToOrchestrator?: boolean;
             orchestrator?: components["schemas"]["RoleOverride"];
             orchestratorRules?: string;
             postCreate?: string[];
@@ -11555,6 +11591,69 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["KillReviewResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
+                };
+            };
+        };
+    };
+    publishReview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Session identifier, e.g. project-1. */
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ControllersPublishReviewInput"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewRunResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["APIError"];
                 };
             };
             /** @description Not Found */

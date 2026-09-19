@@ -43,6 +43,9 @@ type fakeReviewService struct {
 	resolvePRURL      string
 	resolveCommentURL string
 	resolveErr        error
+	published         reviewsvc.PublishRequest
+	publishRun        domain.ReviewRun
+	publishErr        error
 }
 
 func (f *fakeReviewService) Trigger(
@@ -140,6 +143,17 @@ func (f *fakeReviewService) SubmitMany(_ context.Context, _ domain.SessionID, re
 
 func (f *fakeReviewService) List(context.Context, domain.SessionID) (reviewcore.SessionReviews, error) {
 	return f.list, nil
+}
+
+func (f *fakeReviewService) PublishReview(_ context.Context, _ domain.SessionID, req reviewsvc.PublishRequest) (domain.ReviewRun, error) {
+	f.published = req
+	if f.publishErr != nil {
+		return domain.ReviewRun{}, f.publishErr
+	}
+	if f.publishRun.ID != "" {
+		return f.publishRun, nil
+	}
+	return domain.ReviewRun{ID: req.RunID, Verdict: req.Verdict, Body: req.Body, GithubReviewID: "native-1"}, nil
 }
 
 func newReviewTestServer(t *testing.T, svc reviewsvc.Manager) *httptest.Server {
@@ -415,5 +429,47 @@ func TestReviewsSubmitAcceptsBatchedReviews(t *testing.T) {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("body missing %s: %s", want, body)
 		}
+	}
+}
+
+func TestReviewsPublish_ForwardsRequestAndReturnsRun(t *testing.T) {
+	svc := &fakeReviewService{}
+	srv := newReviewTestServer(t, svc)
+
+	reqBody := `{"runId":"run-1","verdict":"changes_requested","body":"please fix","comments":[{"path":"main.go","line":10,"body":"nit"}]}`
+	body, status, headers := doRequest(t, srv, "POST", "/api/v1/sessions/mer-1/reviews/publish", reqBody)
+	assertJSON(t, headers)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%s", status, body)
+	}
+	if svc.published.RunID != "run-1" || svc.published.Verdict != domain.VerdictChangesRequested || svc.published.Body != "please fix" {
+		t.Fatalf("published request = %+v", svc.published)
+	}
+	if len(svc.published.Comments) != 1 || svc.published.Comments[0].Path != "main.go" || svc.published.Comments[0].Line != 10 {
+		t.Fatalf("published comments = %+v", svc.published.Comments)
+	}
+	for _, want := range []string{`"run-1"`, `"native-1"`} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("body missing %s: %s", want, body)
+		}
+	}
+}
+
+func TestReviewsPublish_SurfacesServiceError(t *testing.T) {
+	svc := &fakeReviewService{publishErr: fmt.Errorf("%w: no PR tracked", reviewsvc.ErrNotFound)}
+	srv := newReviewTestServer(t, svc)
+
+	_, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/mer-1/reviews/publish", `{"runId":"run-1","verdict":"approved"}`)
+	if status != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", status)
+	}
+}
+
+func TestReviewsPublish_NotImplementedWithoutService(t *testing.T) {
+	srv := newReviewTestServer(t, nil)
+
+	_, status, _ := doRequest(t, srv, "POST", "/api/v1/sessions/mer-1/reviews/publish", `{"runId":"run-1","verdict":"approved"}`)
+	if status != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501", status)
 	}
 }

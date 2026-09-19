@@ -5545,6 +5545,58 @@ paths:
       summary: Kill a worker's reviewer terminal session
       tags:
       - reviews
+  /api/v1/sessions/{sessionId}/reviews/publish:
+    post:
+      operationId: publishReview
+      parameters:
+      - description: Session identifier, e.g. project-1.
+        in: path
+        name: sessionId
+        required: true
+        schema:
+          description: Session identifier, e.g. project-1.
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ControllersPublishReviewInput'
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReviewRunResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Found
+        "422":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Unprocessable Entity
+        "501":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIError'
+          description: Not Implemented
+      summary: Publish AO's review verdict to the pull request through AO's own SCM
+        provider, then record it
+      tags:
+      - reviews
   /api/v1/sessions/{sessionId}/reviews/rerequest:
     post:
       operationId: requestRereview
@@ -8229,6 +8281,43 @@ components:
         disabled:
           type: boolean
       type: object
+    ControllersPublishReviewCommentInput:
+      properties:
+        body:
+          description: Inline comment text.
+          type: string
+        line:
+          description: Line number the comment is anchored to.
+          type: integer
+        path:
+          description: File path the comment is anchored to.
+          type: string
+      required:
+      - path
+      - line
+      - body
+      type: object
+    ControllersPublishReviewInput:
+      properties:
+        body:
+          description: Review body recorded by AO and posted to the provider. Required
+            for changes_requested.
+          type: string
+        comments:
+          description: Optional inline findings posted alongside the summary.
+          items:
+            $ref: '#/components/schemas/ControllersPublishReviewCommentInput'
+          type: array
+        runId:
+          description: Review run id to publish and complete.
+          type: string
+        verdict:
+          description: 'Review verdict: approved or changes_requested.'
+          type: string
+      required:
+      - runId
+      - verdict
+      type: object
     ControllersRequestRereviewRequest:
       properties:
         pullRequestUrl:
@@ -10424,6 +10513,8 @@ components:
           additionalProperties:
             type: string
           type: object
+        escalateInputToOrchestrator:
+          type: boolean
         orchestrator:
           $ref: '#/components/schemas/RoleOverride'
         orchestratorRules:

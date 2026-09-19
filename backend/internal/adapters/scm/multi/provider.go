@@ -227,6 +227,23 @@ func (m *Provider) ResolveReviewThread(ctx context.Context, request ports.SCMRev
 	return resolver.ResolveReviewThread(ctx, request)
 }
 
+// PublishReview delegates to the sub-provider matching request.PR.Repo.Provider
+// when that provider supports native review publishing.
+func (m *Provider) PublishReview(ctx context.Context, request ports.SCMReviewPublishRequest) (ports.SCMReviewPublishResult, error) {
+	if m == nil {
+		return ports.SCMReviewPublishResult{}, fmt.Errorf("%w: review publisher is unavailable", ports.ErrSCMUnsupported)
+	}
+	p, err := m.resolve(request.PR.Repo.Provider)
+	if err != nil {
+		return ports.SCMReviewPublishResult{}, err
+	}
+	publisher, ok := p.(ports.SCMReviewPublisher)
+	if !ok {
+		return ports.SCMReviewPublishResult{}, fmt.Errorf("%w: review publishing for provider %q", ports.ErrSCMUnsupported, request.PR.Repo.Provider)
+	}
+	return publisher.PublishReview(ctx, request)
+}
+
 type credentialChecker interface {
 	SCMCredentialsAvailable(ctx context.Context) (bool, error)
 }
