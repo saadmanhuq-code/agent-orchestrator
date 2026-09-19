@@ -445,6 +445,18 @@ func Run() error {
 			}
 			agentSvc.ObserveActiveCodexAccountCapacity(observation)
 		},
+		// OnInputEscalation routes a structured FORM input request to the
+		// project's current orchestrator, but only when the project explicitly
+		// opted in (see chat_input_escalation_wiring.go). sessMgr is nil until
+		// wiring below completes; a callback firing before then (it cannot, in
+		// practice, since no Chat controller runs yet) would have nothing to
+		// notify, matching OnAccountChanged/OnCodexCapacityChanged above.
+		OnInputEscalation: func(escCtx context.Context, sessionID domain.SessionID, projectID domain.ProjectID, requestID string, input ports.ChatInputRequest) {
+			if sessMgr == nil {
+				return
+			}
+			escalateChatInputRequest(escCtx, store, sessMgr, log, sessionID, projectID, requestID, input)
+		},
 	})
 
 	codexModelDriver := codexappserver.New(codexagent.New(), log)

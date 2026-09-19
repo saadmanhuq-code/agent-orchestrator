@@ -45,6 +45,7 @@ type Service struct {
 	now                    Clock
 	onAccountChanged       func(domain.SessionID, string, domain.AgentHarness)
 	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
+	onInputEscalation      func(ctx context.Context, sessionID domain.SessionID, projectID domain.ProjectID, requestID string, input ports.ChatInputRequest)
 	stopProviderHost       func(context.Context, domain.SessionID) error
 
 	mu           sync.RWMutex
@@ -92,6 +93,11 @@ type Options struct {
 	// globally active AO Codex account. The callback owns profile-independent
 	// account state; conversation rows are not the authority for Codex capacity.
 	OnCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
+	// OnInputEscalation is notified after a structured FORM input request
+	// durably persists. Nil leaves escalation completely off, independent of
+	// any project's opt-in — production always wires a daemon-owned router that
+	// itself checks the project config before doing anything.
+	OnInputEscalation func(ctx context.Context, sessionID domain.SessionID, projectID domain.ProjectID, requestID string, input ports.ChatInputRequest)
 	// StopProviderHost destroys current session ownership on explicit teardown,
 	// even if its daemon attachment already failed. Never used by StopAll.
 	StopProviderHost func(context.Context, domain.SessionID) error
@@ -119,6 +125,7 @@ func New(opts Options) *Service {
 		now:                    now,
 		onAccountChanged:       opts.OnAccountChanged,
 		onCodexCapacityChanged: opts.OnCodexCapacityChanged,
+		onInputEscalation:      opts.OnInputEscalation,
 		stopProviderHost:       opts.StopProviderHost,
 		controllers:            make(map[domain.SessionID]*Controller),
 		startConfigs:           make(map[domain.SessionID]StartConfig),
@@ -580,7 +587,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// A fresh generation per launch, so events from the controller this one
 	// replaced can be told apart from the current one's.
 	controller := newController(
-		cfg.SessionID, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged)
+		cfg.SessionID, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged, s.onInputEscalation)
 	var commitProviderHistory func(context.Context) error
 	if liveReconnect {
 		providerTurnID := controller.restoreLiveTurnOwnership(liveRows.Turns)
