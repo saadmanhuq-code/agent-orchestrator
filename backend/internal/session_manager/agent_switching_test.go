@@ -1823,6 +1823,22 @@ func TestCoordinationPromptsCannotBeClosedByDynamicPaths(t *testing.T) {
 	}
 }
 
+func TestCoordinationQuotedReferenceEscapesBackslashesAndQuotes(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: `C:\Users\ao\transcript.jsonl`, want: `"C:\\Users\\ao\\transcript.jsonl"`},
+		{input: `C:\Users\ao\say "hi"\transcript.jsonl`, want: `"C:\\Users\\ao\\say \"hi\"\\transcript.jsonl"`},
+		{input: "/var/tmp/ao/transcript.jsonl", want: `"/var/tmp/ao/transcript.jsonl"`},
+	}
+	for _, tt := range tests {
+		if got := coordinationQuotedReference(tt.input); got != tt.want {
+			t.Errorf("coordinationQuotedReference(%q) = %s, want %s", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestBuildTargetContinuationMessageUsesTerminalFallbackWithoutTranscript(t *testing.T) {
 	message := buildTargetContinuationMessage(
 		domain.AgentSwitch{ID: "switch-1", SessionID: "proj-1", FromHarness: domain.HarnessClaudeCode, TargetHarness: domain.HarnessCodex},
@@ -2379,8 +2395,9 @@ func TestSwitchAgentFreshPreservesAOIdentityAndDeliversArtifact(t *testing.T) {
 		providerAfterInfo.Mode() != providerFinalInfo.Mode() {
 		t.Fatalf("AO rewrote provider transcript metadata while capturing it: before=%+v after=%+v", providerFinalInfo, providerAfterInfo)
 	}
+	quotedFinalTranscriptPath := coordinationQuotedReference(resolvedFinalTranscriptPath)
 	if !strings.Contains(target.launchSystemPrompt, "<ao-continuation") ||
-		!strings.Contains(target.launchSystemPrompt, resolvedFinalTranscriptPath) ||
+		!strings.Contains(target.launchSystemPrompt, quotedFinalTranscriptPath) ||
 		!strings.Contains(target.launchSystemPrompt, "FINAL_SOURCE_RECORD") ||
 		!strings.Contains(target.launchSystemPrompt, "implement the feature") ||
 		!strings.Contains(target.launchSystemPrompt, "please keep the API small") ||
