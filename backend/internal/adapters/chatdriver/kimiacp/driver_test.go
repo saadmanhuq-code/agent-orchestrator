@@ -2,7 +2,6 @@ package kimiacp
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -90,8 +89,9 @@ func TestConfigureLaunchesNativeACPSubcommand(t *testing.T) {
 	}
 }
 
-func TestConfigureRejectsUnsupportedPermissionModes(t *testing.T) {
+func TestConfigureAcceptsEveryPermissionModeKimiAdvertises(t *testing.T) {
 	for _, mode := range []ports.PermissionMode{
+		ports.PermissionModeDefault,
 		ports.PermissionModeAcceptEdits,
 		ports.PermissionModeAuto,
 		ports.PermissionModeBypassPermissions,
@@ -100,10 +100,49 @@ func TestConfigureRejectsUnsupportedPermissionModes(t *testing.T) {
 			_, _, err := configure(context.Background(), acpdriver.LaunchConfig{
 				WorkspacePath: t.TempDir(), Permissions: mode,
 			})
-			if !errors.Is(err, ports.ErrChatPermissionModeUnsupported) {
-				t.Fatalf("configure permissions %q error = %v, want typed unsupported-mode error", mode, err)
+			if err != nil {
+				t.Fatalf("configure permissions %q error = %v, want nil", mode, err)
 			}
 		})
+	}
+}
+
+// Kimi Code CLI 0.38.0 advertises default/plan/auto/yolo in session/new and
+// rejects any other mode id with -32602, so AO's bypass-permissions workers
+// must land on "yolo" and its accept-edits/auto workers on "auto".
+func TestSessionModeMapsOntoKimiAdvertisedModes(t *testing.T) {
+	tests := []struct {
+		permission ports.PermissionMode
+		want       string
+	}{
+		{ports.PermissionModeDefault, ""},
+		{ports.PermissionMode("nonsense"), ""},
+		{ports.PermissionModeAcceptEdits, "auto"},
+		{ports.PermissionModeAuto, "auto"},
+		{ports.PermissionModeBypassPermissions, "yolo"},
+	}
+	for _, tc := range tests {
+		t.Run(string(tc.permission), func(t *testing.T) {
+			if got := sessionMode(tc.permission); got != tc.want {
+				t.Fatalf("sessionMode(%q) = %q, want %q", tc.permission, got, tc.want)
+			}
+			if err := validateTurnSettings(tc.permission,
+				ports.ChatTurnSettings{Approval: tc.permission}); err != nil {
+				t.Fatalf("validateTurnSettings(%q) = %v, want nil", tc.permission, err)
+			}
+		})
+	}
+}
+
+func TestBindingWiresSessionModeIntoTheACPTransport(t *testing.T) {
+	// The mapping is only useful if the binding hands it to the transport; a nil
+	// SessionMode would silently leave every worker on Kimi's default mode.
+	cfg := bindingConfig()
+	if cfg.SessionMode == nil {
+		t.Fatal("binding SessionMode is nil: bypass-permissions workers would stay on Kimi's default mode")
+	}
+	if got := cfg.SessionMode(ports.PermissionModeBypassPermissions); got != "yolo" {
+		t.Fatalf("binding SessionMode(bypass-permissions) = %q, want %q", got, "yolo")
 	}
 }
 
