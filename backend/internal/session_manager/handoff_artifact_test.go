@@ -16,7 +16,7 @@ import (
 )
 
 func readNativeTranscriptTail(path, configDir string) (tail string, truncated, ok bool) {
-	return readNativeTranscriptTailWithOpen(context.Background(), path, configDir, os.Open)
+	return readNativeTranscriptTailWithOpen(context.Background(), path, configDir, domain.HarnessClaudeCode, os.Open)
 }
 
 func TestNormalizeTerminalTailStripsControlsAndBoundsNewestLines(t *testing.T) {
@@ -41,7 +41,10 @@ func TestNormalizeTerminalTailStripsControlsAndBoundsNewestLines(t *testing.T) {
 
 func TestReadNativeTranscriptTailKeepsNewestBoundedJSONLLines(t *testing.T) {
 	configDir := t.TempDir()
-	path := filepath.Join(configDir, "session.jsonl")
+	path := filepath.Join(configDir, "projects", "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	var transcript strings.Builder
 	for i := 0; i < handoffTranscriptMaxLines+10; i++ {
 		_, _ = fmt.Fprintf(&transcript, "{\"index\":%d}\n", i)
@@ -73,7 +76,10 @@ func TestReadNativeTranscriptTailKeepsNewestBoundedJSONLLines(t *testing.T) {
 
 func TestReadNativeTranscriptTailPreservesSmallCRLFJSONLAndValidFinalRecord(t *testing.T) {
 	configDir := t.TempDir()
-	path := filepath.Join(configDir, "session.jsonl")
+	path := filepath.Join(configDir, "projects", "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte("{\"index\":1}\r\n{\"index\":2}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +92,10 @@ func TestReadNativeTranscriptTailPreservesSmallCRLFJSONLAndValidFinalRecord(t *t
 
 func TestReadNativeTranscriptTailOmitsIncompleteFinalJSONLRecord(t *testing.T) {
 	configDir := t.TempDir()
-	path := filepath.Join(configDir, "session.jsonl")
+	path := filepath.Join(configDir, "projects", "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte("{\"index\":1}\n{\"index\":"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +111,10 @@ func TestReadNativeTranscriptTailOmitsIncompleteFinalJSONLRecord(t *testing.T) {
 
 func TestReadNativeTranscriptTailBoundsOversizedRecordAndSanitizesControls(t *testing.T) {
 	configDir := t.TempDir()
-	path := filepath.Join(configDir, "session.jsonl")
+	path := filepath.Join(configDir, "projects", "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	data := append(bytes.Repeat([]byte("x"), handoffTranscriptMaxBytes+1024), 0xff, '\x1b', '[', '3', '1', 'm', 0, '\n')
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -126,18 +138,18 @@ func TestReadNativeTranscriptTailBoundsOversizedRecordAndSanitizesControls(t *te
 func TestReadNativeTranscriptTailRejectsUnavailableOrOutsidePath(t *testing.T) {
 	root := t.TempDir()
 	configDir := filepath.Join(root, "provider")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(configDir, "projects"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	outside := filepath.Join(root, "outside.jsonl")
 	if err := os.WriteFile(outside, []byte("outside\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	empty := filepath.Join(configDir, "empty.jsonl")
+	empty := filepath.Join(configDir, "projects", "empty.jsonl")
 	if err := os.WriteFile(empty, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{filepath.Join(configDir, "missing.jsonl"), outside, empty} {
+	for _, path := range []string{filepath.Join(configDir, "projects", "missing.jsonl"), outside, empty} {
 		if tail, truncated, ok := readNativeTranscriptTail(path, configDir); tail != "" || truncated || ok {
 			t.Fatalf("readNativeTranscriptTail(%q) = (%q, %v, %v), want unavailable", path, tail, truncated, ok)
 		}
@@ -146,7 +158,10 @@ func TestReadNativeTranscriptTailRejectsUnavailableOrOutsidePath(t *testing.T) {
 
 func TestReadNativeTranscriptTailRetainsOversizedValidFinalRecordSuffix(t *testing.T) {
 	configDir := t.TempDir()
-	path := filepath.Join(configDir, "session.jsonl")
+	path := filepath.Join(configDir, "projects", "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	record := `{"content":"` + strings.Repeat("x", handoffTranscriptMaxBytes+1024) + `"}`
 	if !json.Valid([]byte(record)) {
 		t.Fatal("test record is not valid JSON")
@@ -169,7 +184,10 @@ func TestReadNativeTranscriptTailRetainsOversizedValidFinalRecordSuffix(t *testi
 
 func TestReadNativeTranscriptTailMarksEarlierOmissionAtIncompleteBoundary(t *testing.T) {
 	configDir := t.TempDir()
-	path := filepath.Join(configDir, "session.jsonl")
+	path := filepath.Join(configDir, "projects", "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	var transcript strings.Builder
 	for i := 0; i < handoffTranscriptMaxLines; i++ {
 		_, _ = fmt.Fprintf(&transcript, "{\"index\":%d}\n", i)

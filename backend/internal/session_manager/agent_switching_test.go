@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -2013,6 +2015,68 @@ func TestCaptureSourceTranscriptFactRequiresProviderLocator(t *testing.T) {
 	}
 }
 
+// TestCaptureSourceTranscriptFactIncludesTailThroughRelocatedProjectsRoot is
+// the production caller-chain reproduction of the exact ao-native-5 bug that
+// the isolated safeNativeTranscriptPath tests cannot catch.
+// captureSourceTranscriptFact resolves the located (lexical) transcript path
+// to its physical form once, then hands that already-physical path to
+// readNativeTranscriptTailWithOpen, which calls safeNativeTranscriptPath on
+// it a second time (to normalize/verify before opening) and a third time
+// (to close the open/use race right before reading) -- both times comparing
+// the now-physical candidate against the still-unresolved
+// configDir/projects. A single-call test can never observe this, because
+// the defect is specifically in what happens when this function's own
+// return value is fed back into it.
+func TestCaptureSourceTranscriptFactIncludesTailThroughRelocatedProjectsRoot(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("NTFS junctions are a Windows-specific reproduction of this bug")
+	}
+
+	root := t.TempDir()
+	configDir := filepath.Join(root, "provider")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	relocatedTarget := filepath.Join(root, "relocated-projects")
+	transcript := filepath.Join(relocatedTarget, "encoded-project", "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcript, []byte("{\"event\":\"final source record\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	junction := filepath.Join(configDir, "projects")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", junction, relocatedTarget).CombinedOutput(); err != nil {
+		t.Skipf("could not create NTFS junction fixture (%v): %s", err, out)
+	}
+
+	locatedPath := filepath.Join(junction, "encoded-project", "session.jsonl")
+	agent := &switchTestAgent{
+		configDir: configDir,
+		available: map[string]ports.NativeSessionAvailability{},
+		locateTranscript: func(ports.NativeSessionRef) (string, bool, error) {
+			return locatedPath, true, nil
+		},
+	}
+	manager := New(Deps{})
+	got, status := manager.captureSourceTranscriptFact(
+		context.Background(),
+		agent,
+		domain.AgentNativeSession{NativeSessionID: "session-1", ConfigDir: configDir, Harness: domain.HarnessClaudeCode},
+		true,
+	)
+	if status != domain.AgentSwitchSourceTranscriptAvailable {
+		t.Fatalf("source transcript status = %q, want available", status)
+	}
+	if got == nil || got.Path == "" {
+		t.Fatalf("transcript fact = %+v, want a resolved path", got)
+	}
+	if got.Tail == "" || !strings.Contains(got.Tail, "final source record") {
+		t.Fatalf("transcript tail = %q, want the relocated transcript's content", got.Tail)
+	}
+}
+
 func TestCaptureSourceTranscriptFactRejectsEmptyLocatedTranscript(t *testing.T) {
 	configDir := t.TempDir()
 	path := filepath.Join(configDir, "empty.jsonl")
@@ -2043,7 +2107,10 @@ func TestCaptureSourceTranscriptFactRejectsEmptyLocatedTranscript(t *testing.T) 
 
 func TestCaptureSourceTranscriptFactDoesNotReadTailWhenSemanticHandoffExists(t *testing.T) {
 	configDir := t.TempDir()
-	path := filepath.Join(configDir, "session.jsonl")
+	path := filepath.Join(configDir, "projects", "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(`{"event":"must not be read"}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -2062,7 +2129,7 @@ func TestCaptureSourceTranscriptFactDoesNotReadTailWhenSemanticHandoffExists(t *
 	got, status := manager.captureSourceTranscriptFact(
 		context.Background(),
 		agent,
-		domain.AgentNativeSession{NativeSessionID: "session-1", ConfigDir: configDir},
+		domain.AgentNativeSession{NativeSessionID: "session-1", ConfigDir: configDir, Harness: domain.HarnessClaudeCode},
 		false,
 	)
 	if got == nil || got.Path == "" || got.Tail != "" || got.Truncated {
@@ -2288,11 +2355,11 @@ func TestSwitchAgentFreshPreservesAOIdentityAndDeliversArtifact(t *testing.T) {
 	manager, store, _ := newSwitchTestManager(t, runtime)
 	source := manager.agents.(switchTestAgents)[domain.HarnessClaudeCode].(*switchTestAgent)
 	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
-	if err := os.MkdirAll(source.configDir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(source.configDir, "projects"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	transcriptPath := filepath.Join(source.configDir, "source-native.jsonl")
-	archivedTranscriptPath := filepath.Join(source.configDir, "source-native-archived.jsonl")
+	transcriptPath := filepath.Join(source.configDir, "projects", "source-native.jsonl")
+	archivedTranscriptPath := filepath.Join(source.configDir, "projects", "source-native-archived.jsonl")
 	expectedTranscript := []byte("{\"event\":\"early source record\"}\n{\"event\":\"FINAL_SOURCE_RECORD\"}\n")
 	if err := os.WriteFile(transcriptPath, []byte("{\"event\":\"early source record\"}\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -2422,6 +2489,76 @@ func TestSwitchAgentFreshPreservesAOIdentityAndDeliversArtifact(t *testing.T) {
 	}
 	if len(store.native) != 2 {
 		t.Fatalf("native sessions = %d, want source and target", len(store.native))
+	}
+}
+
+// TestSwitchAgentFreshDeliversQuotedTranscriptPathThroughRelocatedProjectsRoot
+// is the full handoff-level reproduction of the ao-native-5 Windows bug that
+// the isolated path-containment tests cannot prove end to end: the source
+// provider's config dir is stable while its declared "projects" transcript
+// root is a real NTFS junction onto another physical directory. The switch
+// must still capture the source transcript (status available) and the
+// target's hidden continuation must quote the transcript's resolved physical
+// path and carry its final record, so a Windows worker handoff preserves
+// full context instead of degrading to "unavailable". Pre-fix,
+// safeNativeTranscriptPath's filepath.EvalSymlinks walk failed outright
+// through the junction (and the resolved path lay outside the unresolved
+// configDir anchor either way), so the handoff reported
+// sourceTranscriptStatus=unavailable and the continuation carried neither
+// the quoted path nor the transcript tail.
+func TestSwitchAgentFreshDeliversQuotedTranscriptPathThroughRelocatedProjectsRoot(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("NTFS junctions are a Windows-specific reproduction of this bug")
+	}
+
+	rt := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+	manager, store, _ := newSwitchTestManager(t, rt)
+	source := manager.agents.(switchTestAgents)[domain.HarnessClaudeCode].(*switchTestAgent)
+	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
+
+	if err := os.MkdirAll(source.configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	relocatedProjects := filepath.Join(filepath.Dir(source.configDir), "relocated-projects")
+	physicalTranscript := filepath.Join(relocatedProjects, "encoded-project", "source-native.jsonl")
+	if err := os.MkdirAll(filepath.Dir(physicalTranscript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(physicalTranscript, []byte("{\"event\":\"early source record\"}\n{\"event\":\"FINAL_SOURCE_RECORD\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	junction := filepath.Join(source.configDir, "projects")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", junction, relocatedProjects).CombinedOutput(); err != nil {
+		t.Skipf("could not create NTFS junction fixture (%v): %s", err, out)
+	}
+
+	locatedPath := filepath.Join(junction, "encoded-project", "source-native.jsonl")
+	source.locateTranscript = func(ports.NativeSessionRef) (string, bool, error) {
+		return locatedPath, true, nil
+	}
+	recBeforeSwitch := store.sessions["proj-1"]
+	recBeforeSwitch.Metadata.NativeTranscriptPath = locatedPath
+	store.sessions[recBeforeSwitch.ID] = recBeforeSwitch
+
+	sw, err := switchAgentSynchronously(context.Background(), manager, "proj-1", SwitchAgentConfig{TargetHarness: domain.HarnessCodex, IdempotencyKey: "junction-handoff"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sw.State != domain.AgentSwitchCompleted {
+		t.Fatalf("switch state = %q, want completed", sw.State)
+	}
+	if sw.SourceTranscriptStatus != domain.AgentSwitchSourceTranscriptAvailable {
+		t.Fatalf("source transcript status = %q, want available", sw.SourceTranscriptStatus)
+	}
+	quotedTranscriptPath := coordinationQuotedReference(physicalTranscript)
+	if !strings.Contains(target.launchSystemPrompt, quotedTranscriptPath) {
+		t.Fatalf("hidden continuation did not quote the resolved source transcript path %s:\n%s", quotedTranscriptPath, target.launchSystemPrompt)
+	}
+	if !strings.Contains(target.launchSystemPrompt, "FINAL_SOURCE_RECORD") {
+		t.Fatalf("hidden continuation lost the source transcript tail through the junction:\n%s", target.launchSystemPrompt)
+	}
+	if strings.Contains(target.launchSystemPrompt, "Provider-owned full source native transcript: unavailable") {
+		t.Fatalf("hidden continuation degraded the relocated transcript to unavailable:\n%s", target.launchSystemPrompt)
 	}
 }
 
@@ -4771,10 +4908,10 @@ func TestSwitchAgentRefreshesLateSourceNativeIdentityAtStopBoundary(t *testing.T
 	store.sessions[rec.ID] = rec
 	source := manager.agents.(switchTestAgents)[domain.HarnessClaudeCode].(*switchTestAgent)
 	target := manager.agents.(switchTestAgents)[domain.HarnessCodex].(*switchTestAgent)
-	if err := os.MkdirAll(source.configDir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(source.configDir, "projects"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	transcriptPath := filepath.Join(source.configDir, "late-source-native.jsonl")
+	transcriptPath := filepath.Join(source.configDir, "projects", "late-source-native.jsonl")
 	if err := os.WriteFile(transcriptPath, []byte("{\"event\":\"source history\"}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -4829,7 +4966,7 @@ func TestSwitchAgentRefreshesLateSourceNativeIdentityAtStopBoundary(t *testing.T
 	if retained.ID == "" {
 		t.Fatalf("late source native session was not retained: %+v", retainedSessions)
 	}
-	expectedTranscriptPath := safeNativeTranscriptPath(ctx, transcriptPath, source.configDir)
+	expectedTranscriptPath := safeNativeTranscriptPath(ctx, transcriptPath, source.configDir, domain.HarnessClaudeCode)
 	if retained.NativeSessionID != "late-source-native" || retained.TranscriptPath != expectedTranscriptPath {
 		t.Fatalf("late source native metadata was not retained: %+v", retained)
 	}
@@ -4930,22 +5067,22 @@ func TestReconcileAgentSwitchesCleansTemporaryAndUnownedHandoffFiles(t *testing.
 func TestSafeNativeTranscriptPathRejectsSymlinkEscape(t *testing.T) {
 	root := t.TempDir()
 	configDir := filepath.Join(root, "provider")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(configDir, "projects"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	outside := filepath.Join(root, "outside.jsonl")
 	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(configDir, "transcript.jsonl")
+	link := filepath.Join(configDir, "projects", "transcript.jsonl")
 	if err := os.Symlink(outside, link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	if got := safeNativeTranscriptPath(ctx, link, configDir); got != "" {
+	if got := safeNativeTranscriptPath(ctx, link, configDir, domain.HarnessClaudeCode); got != "" {
 		t.Fatalf("symlink escape accepted as %q", got)
 	}
 
-	inside := filepath.Join(configDir, "inside.jsonl")
+	inside := filepath.Join(configDir, "projects", "inside.jsonl")
 	if err := os.WriteFile(inside, []byte("ok"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -4953,7 +5090,268 @@ func TestSafeNativeTranscriptPathRejectsSymlinkEscape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := safeNativeTranscriptPath(ctx, inside, configDir); got != wantInside {
+	if got := safeNativeTranscriptPath(ctx, inside, configDir, domain.HarnessClaudeCode); got != wantInside {
 		t.Fatalf("contained transcript = %q, want %q", got, wantInside)
+	}
+}
+
+// TestSafeNativeTranscriptPathRejectsMissingOutsideAndInvalidPaths covers the
+// non-junction containment cases: a transcript that does not exist, a real
+// file that plainly lives outside configDir with no reparse point involved,
+// structurally invalid inputs, and an unmapped harness with no declared
+// transcript root at all. All must fail closed with "".
+func TestSafeNativeTranscriptPathRejectsMissingOutsideAndInvalidPaths(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "provider")
+	if err := os.MkdirAll(filepath.Join(configDir, "projects"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(root, "outside.jsonl")
+	if err := os.WriteFile(outside, []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(configDir, "projects", "missing.jsonl")
+	validInsideProjects := filepath.Join(configDir, "projects", "x.jsonl")
+	if err := os.WriteFile(validInsideProjects, []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		path      string
+		configDir string
+		harness   domain.AgentHarness
+	}{
+		{"missing file", missing, configDir, domain.HarnessClaudeCode},
+		{"plainly outside configDir", outside, configDir, domain.HarnessClaudeCode},
+		{"relative path", "relative.jsonl", configDir, domain.HarnessClaudeCode},
+		{"empty path", "", configDir, domain.HarnessClaudeCode},
+		{"empty configDir", filepath.Join(configDir, "projects", "x.jsonl"), "", domain.HarnessClaudeCode},
+		{"unmapped harness with otherwise-valid path", validInsideProjects, configDir, domain.HarnessCursor},
+		{"empty harness with otherwise-valid path", validInsideProjects, configDir, domain.AgentHarness("")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := safeNativeTranscriptPath(ctx, tt.path, tt.configDir, tt.harness); got != "" {
+				t.Fatalf("safeNativeTranscriptPath(%q, %q, %q) = %q, want rejection", tt.path, tt.configDir, tt.harness, got)
+			}
+		})
+	}
+}
+
+// TestSafeNativeTranscriptPathResolvesThroughWindowsJunction reproduces the
+// installed Windows handoff gap for a config dir that is itself relocated
+// onto another volume via an NTFS junction (for example CODEX_HOME, per the
+// sibling fix's commit message: "~/.claude/projects and ~/.codex were
+// relocated"). filepath.EvalSymlinks fails with "path not found" walking any
+// path below a junction boundary even though os.Stat/os.Open read the exact
+// same path fine; before resolveProviderPath, safeNativeTranscriptPath
+// rejected every transcript under such a configDir. Both configDir and path
+// cross the same junction here, so resolving them independently still lands
+// one inside the other -- see
+// TestSafeNativeTranscriptPathResolvesActualClaudeProjectsRelocation for the
+// harder case actually observed on ao-native-5, where configDir itself does
+// not move and only its declared "projects" child does.
+func TestSafeNativeTranscriptPathResolvesThroughWindowsJunction(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("NTFS junctions are a Windows-specific reproduction of this bug")
+	}
+
+	root := t.TempDir()
+	relocatedTarget := filepath.Join(root, "relocated-config")
+	transcript := filepath.Join(relocatedTarget, "projects", "encoded-project", "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcript, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	configDir := filepath.Join(root, "provider")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", configDir, relocatedTarget).CombinedOutput(); err != nil {
+		t.Skipf("could not create NTFS junction fixture (%v): %s", err, out)
+	}
+
+	path := filepath.Join(configDir, "projects", "encoded-project", "session.jsonl")
+	want, err := resolveProviderPath(path)
+	if err != nil {
+		t.Fatalf("resolveProviderPath(%q): %v", path, err)
+	}
+	if got := safeNativeTranscriptPath(ctx, path, configDir, domain.HarnessClaudeCode); got != want {
+		t.Fatalf("safeNativeTranscriptPath through junction = %q, want %q", got, want)
+	}
+}
+
+// TestSafeNativeTranscriptPathResolvesActualClaudeProjectsRelocation
+// reproduces the exact topology observed on the ao-native-5 handoff bug and
+// proves it now resolves. On the controller install, ~/.claude itself is an
+// ordinary directory (confirmed via `fsutil reparsepoint query`) and only
+// its "projects" child is an NTFS junction to another volume -- a stable
+// configDir with a relocated child, not a relocated configDir. Earlier
+// (pre-fix) this was indistinguishable from a malicious junction planted
+// anywhere else directly under configDir once both were fully resolved,
+// because resolving raw configDir never crosses the "projects" boundary at
+// all. safeNativeTranscriptPath now anchors containment on
+// filepath.Join(configDir, "projects") -- a fixed root derived only from the
+// trusted harness and configDir, exactly mirroring how
+// service/usage/collector.go's DefaultSourceRoots configures
+// SourceRoots.ClaudeProjects -- so the relocated root and the candidate
+// cross the same junction on both sides of the physical containment check.
+// See TestSafeNativeTranscriptPathRejectsJunctionEscapingConfigDir and
+// TestSafeNativeTranscriptPathRejectsJunctionNestedInsideProjectsRoot for the
+// negative counterparts this does not weaken.
+func TestSafeNativeTranscriptPathResolvesActualClaudeProjectsRelocation(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("NTFS junctions are a Windows-specific reproduction of this bug")
+	}
+
+	root := t.TempDir()
+	configDir := filepath.Join(root, "provider")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	relocatedTarget := filepath.Join(root, "relocated-projects")
+	transcript := filepath.Join(relocatedTarget, "encoded-project", "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcript, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	junction := filepath.Join(configDir, "projects")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", junction, relocatedTarget).CombinedOutput(); err != nil {
+		t.Skipf("could not create NTFS junction fixture (%v): %s", err, out)
+	}
+
+	path := filepath.Join(junction, "encoded-project", "session.jsonl")
+	want, err := resolveProviderPath(path)
+	if err != nil {
+		t.Fatalf("resolveProviderPath(%q): %v", path, err)
+	}
+	if got := safeNativeTranscriptPath(ctx, path, configDir, domain.HarnessClaudeCode); got != want {
+		t.Fatalf("safeNativeTranscriptPath through relocated projects root = %q, want %q", got, want)
+	}
+}
+
+// TestSafeNativeTranscriptPathRejectsJunctionEscapingConfigDir is a negative
+// counterpart: a junction planted directly under configDir, at a name other
+// than the harness's declared transcript root ("projects" for Claude Code),
+// must still be rejected -- even though it is structurally identical to the
+// legitimate relocation (a junction that is a direct child of configDir).
+// safeNativeTranscriptPath tells the two apart only because the fixed root
+// it trusts is derived from the harness and configDir, never from the
+// candidate path: this path is rejected lexically, before any filesystem
+// resolution, because it does not fall under
+// filepath.Join(configDir, "projects") at all.
+func TestSafeNativeTranscriptPathRejectsJunctionEscapingConfigDir(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("NTFS junctions are a Windows-specific reproduction of this bug")
+	}
+
+	configDir := filepath.Join(t.TempDir(), "provider")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outsideTarget := filepath.Join(t.TempDir(), "outside-target")
+	if err := os.MkdirAll(outsideTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	transcript := filepath.Join(outsideTarget, "session.jsonl")
+	if err := os.WriteFile(transcript, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	junctionInConfigDir := filepath.Join(configDir, "escape-project")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", junctionInConfigDir, outsideTarget).CombinedOutput(); err != nil {
+		t.Skipf("could not create NTFS junction fixture (%v): %s", err, out)
+	}
+
+	path := filepath.Join(junctionInConfigDir, "session.jsonl")
+	if got := safeNativeTranscriptPath(ctx, path, configDir, domain.HarnessClaudeCode); got != "" {
+		t.Fatalf("junction escape accepted as %q", got)
+	}
+}
+
+// TestSafeNativeTranscriptPathRejectsJunctionNestedInsideProjectsRoot is the
+// nested-escape counterpart root asked for: a junction planted *inside* the
+// legitimate "projects" root itself (which is an ordinary directory here,
+// not relocated) whose physical target lies outside it. This exercises the
+// second, physical-resolution containment stage specifically -- the lexical
+// stage alone accepts this path, since it genuinely is nested under
+// configDir/projects by spelling -- mirroring
+// TestCollectorRejectsInRootJunctionEscapingAllowedRoot in
+// service/usage/collector_test.go: an escape one level inside an allowed
+// root must still be rejected, not just an escape at the root's own level.
+func TestSafeNativeTranscriptPathRejectsJunctionNestedInsideProjectsRoot(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("NTFS junctions are a Windows-specific reproduction of this bug")
+	}
+
+	configDir := filepath.Join(t.TempDir(), "provider")
+	projectsRoot := filepath.Join(configDir, "projects")
+	if err := os.MkdirAll(projectsRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outsideTarget := filepath.Join(t.TempDir(), "outside-target")
+	if err := os.MkdirAll(outsideTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	transcript := filepath.Join(outsideTarget, "session.jsonl")
+	if err := os.WriteFile(transcript, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	nestedJunction := filepath.Join(projectsRoot, "escape-project")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", nestedJunction, outsideTarget).CombinedOutput(); err != nil {
+		t.Skipf("could not create NTFS junction fixture (%v): %s", err, out)
+	}
+
+	path := filepath.Join(nestedJunction, "session.jsonl")
+	if got := safeNativeTranscriptPath(ctx, path, configDir, domain.HarnessClaudeCode); got != "" {
+		t.Fatalf("junction nested inside the legitimate projects root escaped as %q", got)
+	}
+}
+
+// TestSafeNativeTranscriptPathResolvesCodexArchivedSessionsRelocationThroughJunction
+// extends the junction coverage past Claude Code's single "projects" root to
+// the harness with two declared transcript roots: Codex's LocateTranscript
+// searches "sessions" first and then "archived_sessions"
+// (adapters/agent/codex/continuation.go). Anchoring on the relocated
+// "archived_sessions" child here proves the root loop does not stop at a
+// non-matching first declared root, and that a legitimate Codex transcript
+// archive relocated through an NTFS junction resolves instead of failing
+// closed.
+func TestSafeNativeTranscriptPathResolvesCodexArchivedSessionsRelocationThroughJunction(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("NTFS junctions are a Windows-specific reproduction of this bug")
+	}
+
+	root := t.TempDir()
+	configDir := filepath.Join(root, "codex")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	relocatedTarget := filepath.Join(root, "relocated-archived-sessions")
+	transcript := filepath.Join(relocatedTarget, "2026", "09", "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcript, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	junction := filepath.Join(configDir, "archived_sessions")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", junction, relocatedTarget).CombinedOutput(); err != nil {
+		t.Skipf("could not create NTFS junction fixture (%v): %s", err, out)
+	}
+
+	path := filepath.Join(junction, "2026", "09", "session.jsonl")
+	want, err := resolveProviderPath(path)
+	if err != nil {
+		t.Fatalf("resolveProviderPath(%q): %v", path, err)
+	}
+	if got := safeNativeTranscriptPath(ctx, path, configDir, domain.HarnessCodex); got != want {
+		t.Fatalf("safeNativeTranscriptPath through relocated archived_sessions root = %q, want %q", got, want)
 	}
 }

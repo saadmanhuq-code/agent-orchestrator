@@ -130,11 +130,11 @@ func normalizeTerminalTail(output string) string {
 	return ""
 }
 
-func readNativeTranscriptTailWithOpen(ctx context.Context, path, configDir string, openFile func(string) (*os.File, error)) (tail string, truncated, ok bool) {
+func readNativeTranscriptTailWithOpen(ctx context.Context, path, configDir string, harness domain.AgentHarness, openFile func(string) (*os.File, error)) (tail string, truncated, ok bool) {
 	if ctx.Err() != nil {
 		return "", false, false
 	}
-	path = safeNativeTranscriptPath(ctx, path, configDir)
+	path = safeNativeTranscriptPath(ctx, path, configDir, harness)
 	if path == "" || openFile == nil {
 		return "", false, false
 	}
@@ -153,7 +153,7 @@ func readNativeTranscriptTailWithOpen(ctx context.Context, path, configDir strin
 	if ctx.Err() != nil {
 		return "", false, false
 	}
-	revalidated := safeNativeTranscriptPath(ctx, path, configDir)
+	revalidated := safeNativeTranscriptPath(ctx, path, configDir, harness)
 	if revalidated == "" || revalidated != path {
 		return "", false, false
 	}

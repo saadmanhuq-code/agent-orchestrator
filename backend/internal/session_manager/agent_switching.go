@@ -305,7 +305,7 @@ func (m *Manager) admitAgentSwitch(ctx context.Context, id domain.SessionID, cfg
 	if mode == domain.SessionModeChat {
 		sourceRecord.Metadata.AgentSessionID = rec.Metadata.ProviderConversationID
 	}
-	sourceNative, err := m.preserveCurrentNativeSession(ctx, store, sourceRecord, sourceAgent, sourceEnv, sourceGeneration)
+	sourceNative, err := m.preserveCurrentNativeSession(ctx, store, sourceRecord, rec.Harness, sourceAgent, sourceEnv, sourceGeneration)
 	if err != nil {
 		return domain.AgentSwitch{}, nil, classifyAgentSwitchAdmissionFailure(
 			domain.AgentSwitchFailureSourceNativePreserve,
@@ -684,6 +684,7 @@ func (m *Manager) executeAgentSwitch(ctx context.Context, admitted *admittedAgen
 		refreshCtx,
 		store,
 		stoppedSession,
+		rec.Harness,
 		sourceAgent,
 		sourceEnv,
 		sourceGeneration,
@@ -1307,17 +1308,17 @@ func validateContinuationAgent(agent ports.Agent) (ports.ContinuationCapabilitie
 	return caps, nil
 }
 
-func (m *Manager) preserveCurrentNativeSession(ctx context.Context, store ports.AgentSwitchStore, rec domain.SessionRecord, agent ports.Agent, env map[string]string, generation domain.AgentGenerationID) (domain.AgentNativeSession, error) {
+func (m *Manager) preserveCurrentNativeSession(ctx context.Context, store ports.AgentSwitchStore, rec domain.SessionRecord, harness domain.AgentHarness, agent ports.Agent, env map[string]string, generation domain.AgentGenerationID) (domain.AgentNativeSession, error) {
 	configDir, err := nativeConfigDir(ctx, agent, env)
 	if err != nil {
 		return domain.AgentNativeSession{}, err
 	}
 	nativeID := strings.TrimSpace(rec.Metadata.AgentSessionID)
 	ref := ports.NativeSessionRef{NativeSessionID: nativeID, ConfigDir: configDir}
-	transcript := safeNativeTranscriptPath(ctx, rec.Metadata.NativeTranscriptPath, configDir)
+	transcript := safeNativeTranscriptPath(ctx, rec.Metadata.NativeTranscriptPath, configDir, harness)
 	if locator, ok := agent.(ports.AgentTranscriptLocator); ok && nativeID != "" {
 		if path, found, locateErr := locator.LocateTranscript(ctx, ref); locateErr == nil && found {
-			transcript = safeNativeTranscriptPath(ctx, path, configDir)
+			transcript = safeNativeTranscriptPath(ctx, path, configDir, harness)
 		}
 	}
 	now := m.clock()
@@ -1674,7 +1675,7 @@ func (m *Manager) findTargetResumeCandidate(ctx context.Context, store ports.Age
 		}
 		if locator, ok := agent.(ports.AgentTranscriptLocator); ok {
 			if path, found, locateErr := locator.LocateTranscript(ctx, ref); locateErr == nil && found {
-				candidate.TranscriptPath = safeNativeTranscriptPath(ctx, path, configDir)
+				candidate.TranscriptPath = safeNativeTranscriptPath(ctx, path, configDir, harness)
 			}
 		}
 		return candidate, true, nil
@@ -1698,7 +1699,68 @@ func nativeConfigDir(ctx context.Context, agent ports.Agent, env map[string]stri
 	return filepath.Clean(dir), nil
 }
 
-func safeNativeTranscriptPath(ctx context.Context, path, configDir string) string {
+// nativeTranscriptRoots returns the fixed, harness-declared subdirectory
+// names under a native provider's config dir where AO-verified transcripts
+// live, mirroring each adapter's own LocateTranscript search one for one:
+// claudecode/continuation.go ("projects"), codex/continuation.go ("sessions",
+// "archived_sessions"), kimi/continuation.go ("sessions"). This is the only
+// anchor safeNativeTranscriptPath trusts for widening containment past a
+// bare configDir comparison: it is derived solely from the harness type and
+// the already-trusted configDir, never from the candidate path or any
+// source/target agent output, so a legitimate relocated transcript
+// directory (a known child of configDir) can be told apart from an
+// arbitrary junction escape planted elsewhere under configDir -- the two are
+// otherwise indistinguishable once resolved. A harness with no declared root
+// here has no verified on-disk convention to anchor against, so
+// safeNativeTranscriptPath fails closed for it rather than guessing or
+// falling back to a looser check.
+func nativeTranscriptRoots(harness domain.AgentHarness) []string {
+	switch harness {
+	case domain.HarnessClaudeCode:
+		return []string{"projects"}
+	case domain.HarnessCodex:
+		return []string{"sessions", "archived_sessions"}
+	case domain.HarnessKimi:
+		return []string{"sessions"}
+	default:
+		return nil
+	}
+}
+
+// pathUnder reports whether candidate is root itself or lies inside it,
+// purely by path-component comparison (no filesystem access).
+func pathUnder(root, candidate string) bool {
+	rel, err := filepath.Rel(root, candidate)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// safeNativeTranscriptPath resolves path to its canonical physical form and
+// verifies it lives inside one of harness's declared provider transcript
+// roots below configDir (see nativeTranscriptRoots), returning "" on any
+// failure or escape. Containment is checked twice by design: first
+// lexically, against the fixed, harness-declared root joined onto the
+// trusted (unresolved) configDir -- cheap, and independent of anything a
+// junction could redirect -- and again physically, after resolving both the
+// root and path through native OS handles, so a junction nested inside the
+// legitimate root that redirects back out still gets caught. A relocated
+// legitimate root (for example configDir/projects itself mounted onto
+// another volume) resolves consistently on both sides of the second check,
+// because the root and the candidate cross that exact same junction; an
+// escape planted anywhere else under configDir never passes the first,
+// lexical check at all.
+//
+// The lexical check also accepts path already being the declared root's own
+// resolved physical form. This function's callers re-validate a path this
+// function already returned once -- readNativeTranscriptTailWithOpen calls
+// it again immediately before opening, and a third time right before
+// reading, to close the open/use race -- and by then path is no longer the
+// pre-resolution candidate configDir/projects would lexically prefix; it is
+// already the far side of the relocation (see
+// TestCaptureSourceTranscriptFactIncludesTailThroughRelocatedProjectsRoot).
+// The anchor stays the same fixed, harness-declared root either way: this
+// recognizes a second valid *shape* of input to the identical check, it does
+// not widen which roots or which physical locations are trusted.
+func safeNativeTranscriptPath(ctx context.Context, path, configDir string, harness domain.AgentHarness) string {
 	if ctx.Err() != nil {
 		return ""
 	}
@@ -1707,22 +1769,46 @@ func safeNativeTranscriptPath(ctx context.Context, path, configDir string) strin
 		return ""
 	}
 	clean := filepath.Clean(path)
-	realConfigDir, err := filepath.EvalSymlinks(filepath.Clean(configDir))
+	configDirClean := filepath.Clean(configDir)
+
+	roots := nativeTranscriptRoots(harness)
+	if len(roots) == 0 {
+		return ""
+	}
+	var providerRoot string
+	for _, root := range roots {
+		candidateRoot := filepath.Join(configDirClean, root)
+		if pathUnder(candidateRoot, clean) {
+			providerRoot = candidateRoot
+			break
+		}
+		if resolvedRoot, err := resolveProviderPath(candidateRoot); err == nil && pathUnder(resolvedRoot, clean) {
+			providerRoot = candidateRoot
+			break
+		}
+		if ctx.Err() != nil {
+			return ""
+		}
+	}
+	if providerRoot == "" {
+		return ""
+	}
+
+	realProviderRoot, err := resolveProviderPath(providerRoot)
 	if err != nil {
 		return ""
 	}
 	if ctx.Err() != nil {
 		return ""
 	}
-	realPath, err := filepath.EvalSymlinks(clean)
+	realPath, err := resolveProviderPath(clean)
 	if err != nil {
 		return ""
 	}
 	if ctx.Err() != nil {
 		return ""
 	}
-	rel, err := filepath.Rel(realConfigDir, realPath)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if !pathUnder(realProviderRoot, realPath) {
 		return ""
 	}
 	info, err := os.Stat(realPath)
@@ -1745,7 +1831,7 @@ func (m *Manager) captureSourceTranscriptFact(ctx context.Context, agent ports.A
 	if err != nil || !found {
 		return nil, domain.AgentSwitchSourceTranscriptUnavailable
 	}
-	path := safeNativeTranscriptPath(ctx, located, source.ConfigDir)
+	path := safeNativeTranscriptPath(ctx, located, source.ConfigDir, source.Harness)
 	if path == "" {
 		return nil, domain.AgentSwitchSourceTranscriptUnavailable
 	}
@@ -1756,7 +1842,7 @@ func (m *Manager) captureSourceTranscriptFact(ctx context.Context, agent ports.A
 	if openFile == nil {
 		openFile = os.Open
 	}
-	tail, truncated, readable := readNativeTranscriptTailWithOpen(ctx, path, source.ConfigDir, openFile)
+	tail, truncated, readable := readNativeTranscriptTailWithOpen(ctx, path, source.ConfigDir, source.Harness, openFile)
 	if !readable {
 		return nil, domain.AgentSwitchSourceTranscriptUnavailable
 	}
@@ -3368,7 +3454,7 @@ func (m *Manager) targetNativeIdentityRecoverable(ctx context.Context, store por
 		return false, nil
 	}
 	native.NativeSessionID = observedID
-	if transcript := safeNativeTranscriptPath(ctx, rec.Metadata.NativeTranscriptPath, native.ConfigDir); transcript != "" {
+	if transcript := safeNativeTranscriptPath(ctx, rec.Metadata.NativeTranscriptPath, native.ConfigDir, native.Harness); transcript != "" {
 		native.TranscriptPath = transcript
 	}
 	updated, err := store.UpdateAgentNativeSession(ctx, native, sw.TargetGenerationID)
