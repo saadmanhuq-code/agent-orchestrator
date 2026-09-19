@@ -279,6 +279,16 @@ type ContinuousTerminalActivityDetector interface {
 	ContinuouslyDetectTerminalActivity() bool
 }
 
+// TerminalEmulatorRequirer is implemented by adapters whose TUI only starts on
+// a terminal that answers terminal queries, above all the cursor position
+// report (ESC[6n). AO's native PTY host is a bare pty with no emulator behind
+// it and never answers, so such a TUI abandons startup and exits within
+// seconds. Sessions for these adapters are created on the tmux runtime, which
+// is a real emulator, instead.
+type TerminalEmulatorRequirer interface {
+	RequiresTerminalEmulator() bool
+}
+
 // WaitingTerminalActivityDetector is implemented by non-continuous terminal
 // detectors that can authoritatively recover from a durable waiting-input state.
 type WaitingTerminalActivityDetector interface {

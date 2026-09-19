@@ -780,6 +780,7 @@ func (m *Manager) executeAgentSwitch(ctx context.Context, admitted *admittedAgen
 
 	runtimeCfg := ports.RuntimeConfig{
 		SessionID: id, WorkspacePath: rec.Metadata.WorkspacePath, Argv: target.argv, Env: target.env,
+		RequiresTerminalEmulator: agentRequiresTerminalEmulator(target.agent),
 	}
 	recorder.boundary(domain.AgentSwitchFailureTargetRuntimeCreate)
 	// The post-stop preparation budget may expire while hooks are being

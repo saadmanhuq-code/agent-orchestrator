@@ -221,6 +221,10 @@ type RuntimeConfig struct {
 	// not determine whether a terminal survives an app launch. Agent runtimes
 	// leave it disabled to retain scrollback and manual recovery.
 	ExitOnCommandCompletion bool
+	// RequiresTerminalEmulator asks for a runtime backend that emulates a
+	// terminal (answers ESC[6n and friends) rather than AO's bare PTY host.
+	// Set from the agent adapter's TerminalEmulatorRequirer capability.
+	RequiresTerminalEmulator bool
 }
 
 // RuntimeHandle identifies a live runtime instance. Its ID is opaque outside

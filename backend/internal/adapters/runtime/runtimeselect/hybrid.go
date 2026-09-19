@@ -53,6 +53,9 @@ func newHybridRuntime(legacy, direct routedBackend, log *slog.Logger, platform s
 // fails before a handle is returned, tmux remains a compatibility fallback so
 // a host-specific problem does not prevent an agent session from starting.
 func (r *hybridRuntime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
+	if cfg.RequiresTerminalEmulator {
+		return r.createOnEmulator(ctx, cfg)
+	}
 	handle, err := r.direct.Create(ctx, cfg)
 	if err == nil {
 		handle.ID = directHandlePrefix + handle.ID
@@ -69,6 +72,32 @@ func (r *hybridRuntime) Create(ctx context.Context, cfg ports.RuntimeConfig) (po
 			fmt.Errorf("%s tmux fallback: %w", r.platform, fallbackErr),
 		)
 	}
+	return fallback, nil
+}
+
+// createOnEmulator serves agents whose TUI needs a real terminal emulator. The
+// native PTY host never answers a cursor position report (ESC[6n), so those
+// TUIs give up and exit a few seconds after launch; tmux answers it. tmux is
+// tried first here and the PTY host stays as the fallback, so a host without
+// tmux still gets a session rather than no session at all.
+func (r *hybridRuntime) createOnEmulator(ctx context.Context, cfg ports.RuntimeConfig) (ports.RuntimeHandle, error) {
+	handle, err := r.legacy.Create(ctx, cfg)
+	if err == nil {
+		return handle, nil
+	}
+	r.log.Warn("tmux unavailable for an agent whose TUI needs a terminal emulator; falling back to the direct PTY host",
+		"session_id", cfg.SessionID,
+		"platform", r.platform,
+		"err", err,
+	)
+	fallback, fallbackErr := r.direct.Create(ctx, cfg)
+	if fallbackErr != nil {
+		return ports.RuntimeHandle{}, errors.Join(
+			fmt.Errorf("tmux: %w", err),
+			fmt.Errorf("%s direct PTY host: %w", r.platform, fallbackErr),
+		)
+	}
+	fallback.ID = directHandlePrefix + fallback.ID
 	return fallback, nil
 }
 

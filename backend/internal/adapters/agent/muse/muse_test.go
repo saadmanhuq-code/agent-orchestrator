@@ -615,3 +615,18 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	}
 	return string(out)
 }
+
+// Muse Code 1.3.0 reads the cursor position (ESC[6n) during startup and exits
+// with "The cursor position could not be read within a normal duration" when
+// nothing answers. AO's bare PTY host never answers, so the adapter must ask
+// for the tmux runtime instead.
+func TestPluginRequiresATerminalEmulator(t *testing.T) {
+	var plugin ports.Agent = New()
+	requirer, ok := plugin.(ports.TerminalEmulatorRequirer)
+	if !ok {
+		t.Fatal("muse plugin does not implement ports.TerminalEmulatorRequirer")
+	}
+	if !requirer.RequiresTerminalEmulator() {
+		t.Fatal("RequiresTerminalEmulator = false, want true: the Muse TUI exits on a pty that cannot answer ESC[6n")
+	}
+}

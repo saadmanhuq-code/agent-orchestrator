@@ -164,6 +164,63 @@ func TestHybridRuntimeFallsBackToTmuxWhenDirectCreateFails(t *testing.T) {
 	}
 }
 
+// Muse's TUI reads the cursor position while starting and exits when nothing
+// answers, which the bare PTY host never does. Those sessions must be created
+// on tmux, and the handle must stay unprefixed so every later call routes there
+// too.
+func TestHybridRuntimeCreatesTerminalEmulatorAgentsOnTmux(t *testing.T) {
+	legacy := &restartableFakeBackend{}
+	direct := &fakeBackend{}
+	runtime := newHybridRuntime(legacy, direct, nil, "Linux")
+
+	handle, err := runtime.Create(context.Background(), ports.RuntimeConfig{
+		SessionID: "session-1", RequiresTerminalEmulator: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handle.ID != "session-1" {
+		t.Fatalf("handle = %q, want unprefixed tmux handle", handle.ID)
+	}
+	if !reflect.DeepEqual(legacy.calls, []string{"create:session-1"}) {
+		t.Fatalf("legacy calls = %v, want the tmux backend to create the session", legacy.calls)
+	}
+	if len(direct.calls) != 0 {
+		t.Fatalf("direct calls = %v, want none", direct.calls)
+	}
+}
+
+func TestHybridRuntimeFallsBackToDirectHostWhenTmuxIsMissing(t *testing.T) {
+	legacy := &restartableFakeBackend{fakeBackend: fakeBackend{createErr: errors.New("tmux not installed")}}
+	direct := &fakeBackend{}
+	runtime := newHybridRuntime(legacy, direct, nil, "Linux")
+
+	handle, err := runtime.Create(context.Background(), ports.RuntimeConfig{
+		SessionID: "session-1", RequiresTerminalEmulator: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handle.ID != directHandlePrefix+"session-1" {
+		t.Fatalf("fallback handle = %q, want versioned direct handle", handle.ID)
+	}
+}
+
+func TestHybridRuntimeReportsBothTerminalEmulatorCreationFailures(t *testing.T) {
+	tmuxErr := errors.New("tmux not installed")
+	directErr := errors.New("host unavailable")
+	legacy := &restartableFakeBackend{fakeBackend: fakeBackend{createErr: tmuxErr}}
+	direct := &fakeBackend{createErr: directErr}
+	runtime := newHybridRuntime(legacy, direct, nil, "Linux")
+
+	_, err := runtime.Create(context.Background(), ports.RuntimeConfig{
+		SessionID: "session-1", RequiresTerminalEmulator: true,
+	})
+	if !errors.Is(err, tmuxErr) || !errors.Is(err, directErr) {
+		t.Fatalf("Create error = %v, want both tmux and direct failures", err)
+	}
+}
+
 func TestHybridRuntimeReportsBothCreationFailures(t *testing.T) {
 	directErr := errors.New("host unavailable")
 	fallbackErr := errors.New("tmux unavailable")

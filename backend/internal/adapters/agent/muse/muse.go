@@ -50,6 +50,16 @@ func New() *Plugin {
 var _ adapters.Adapter = (*Plugin)(nil)
 var _ ports.Agent = (*Plugin)(nil)
 var _ ports.ContinuousTerminalActivityDetector = (*Plugin)(nil)
+var _ ports.TerminalEmulatorRequirer = (*Plugin)(nil)
+
+// RequiresTerminalEmulator reports that Muse's TUI must be created on a runtime
+// that emulates a terminal. Muse reads the cursor position (ESC[6n) while
+// starting up and exits with "The cursor position could not be read within a
+// normal duration" when nothing answers; AO's bare PTY host never answers, so
+// a Muse worker there dies a few seconds after launch. Verified on Muse Code
+// 1.3.0: under a pty that answers ESC[6n the TUI renders and stays up, under an
+// identical pty that stays silent it exits after about four seconds.
+func (p *Plugin) RequiresTerminalEmulator() bool { return true }
 
 // Manifest returns the adapter's static self-description.
 func (p *Plugin) Manifest() adapters.Manifest {

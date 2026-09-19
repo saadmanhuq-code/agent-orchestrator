@@ -1062,10 +1062,11 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	}
 	defer releaseCodexAdmission()
 	handle, err := m.runtime.Create(ctx, ports.RuntimeConfig{
-		SessionID:     id,
-		WorkspacePath: ws.Path,
-		Argv:          argv,
-		Env:           env,
+		SessionID:                id,
+		WorkspacePath:            ws.Path,
+		Argv:                     argv,
+		Env:                      env,
+		RequiresTerminalEmulator: agentRequiresTerminalEmulator(agent),
 	})
 	if err != nil {
 		m.rollbackSeedSpawnWorkspace(ctx, rec, ws, workspaceProject, true)
@@ -2326,10 +2327,11 @@ func (m *Manager) relaunchSessionWithPolicyAndGeneration(ctx context.Context, op
 	}
 	defer releaseCodexAdmission()
 	runtimeCfg := ports.RuntimeConfig{
-		SessionID:     rec.ID,
-		WorkspacePath: ws.Path,
-		Argv:          argv,
-		Env:           env,
+		SessionID:                rec.ID,
+		WorkspacePath:            ws.Path,
+		Argv:                     argv,
+		Env:                      env,
+		RequiresTerminalEmulator: agentRequiresTerminalEmulator(agent),
 	}
 	var handle ports.RuntimeHandle
 	if restartHandle == nil {
@@ -4507,6 +4509,14 @@ type preLauncher interface {
 // that should be released only after AO has actually removed the workspace.
 type workspaceCleaner interface {
 	CleanupWorkspace(ctx context.Context, cfg ports.WorkspaceHookConfig) error
+}
+
+// agentRequiresTerminalEmulator reports whether this adapter's TUI has to be
+// created on a runtime backend that emulates a terminal rather than on AO's
+// bare PTY host. See ports.TerminalEmulatorRequirer.
+func agentRequiresTerminalEmulator(agent ports.Agent) bool {
+	requirer, ok := agent.(ports.TerminalEmulatorRequirer)
+	return ok && requirer.RequiresTerminalEmulator()
 }
 
 func (m *Manager) augmentAgentRuntimeEnv(agent ports.Agent, env map[string]string) {
