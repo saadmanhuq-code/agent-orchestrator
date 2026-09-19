@@ -182,6 +182,13 @@ type Controller struct {
 	now                    Clock
 	onAccountChanged       func(domain.SessionID, string, domain.AgentHarness)
 	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
+	// onInputEscalation, when set, is notified after a structured FORM input
+	// request (ports.ChatInputModeForm) durably persists for this session. It is
+	// daemon-owned routing's decision whether the owning project opted in and
+	// who the current orchestrator is; this hook only reports the fact. Never
+	// invoked for a URL/OAuth elicitation or a tool approval — those are not a
+	// question an orchestrator can answer on the user's behalf.
+	onInputEscalation func(ctx context.Context, sessionID domain.SessionID, projectID domain.ProjectID, requestID string, input ports.ChatInputRequest)
 
 	// sendMu serializes command dispatch so only one operation mutates the
 	// provider conversation at a time.
@@ -298,6 +305,7 @@ func newController(
 	now Clock,
 	onAccountChanged func(domain.SessionID, string, domain.AgentHarness),
 	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation),
+	onInputEscalation func(ctx context.Context, sessionID domain.SessionID, projectID domain.ProjectID, requestID string, input ports.ChatInputRequest),
 ) *Controller {
 	c := &Controller{
 		sessionID:              sessionID,
@@ -312,6 +320,7 @@ func newController(
 		now:                    now,
 		onAccountChanged:       onAccountChanged,
 		onCodexCapacityChanged: onCodexCapacityChanged,
+		onInputEscalation:      onInputEscalation,
 		state:                  ports.ChatControllerReady,
 		settings:               conversation.Settings,
 		mcpServers:             map[string]domain.ConversationMCPServer{},
@@ -2784,6 +2793,17 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		c.reportInteractionResolved(ctx, "chat.approval.resolved", now)
 	case ports.ChatEventInputRequested:
 		c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.input.requested", now)
+		// Escalation is only for a structured question the provider restricted to
+		// a schema (form mode). A URL/OAuth elicitation is consent to open a
+		// link, never a decision to relay on the user's behalf, and this branch
+		// only runs on a newly-projected event (see projectEvent's dedup gate on
+		// c.store.ProjectProviderEvent), so a replayed/duplicate event or a
+		// history-reconstruction pass (which never calls afterProject) cannot
+		// fire it twice.
+		if c.onInputEscalation != nil && event.Input != nil &&
+			event.Input.Mode == ports.ChatInputModeForm && event.RequestID != "" {
+			c.onInputEscalation(ctx, c.sessionID, c.conversation.ProjectID, event.RequestID, *event.Input)
+		}
 	case ports.ChatEventInputResolved:
 		c.reportInteractionResolved(ctx, "chat.input.resolved", now)
 	case ports.ChatEventControllerState:

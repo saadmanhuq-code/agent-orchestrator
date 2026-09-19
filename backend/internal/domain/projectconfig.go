@@ -73,6 +73,14 @@ type ProjectConfig struct {
 	// new session at spawn time. Users can still override the per-session toggle
 	// after spawn.
 	AutoReview bool `json:"autoReview,omitempty"`
+
+	// EscalateInputToOrchestrator opts this project into notifying its current
+	// orchestrator session when a worker's Chat conversation persists a
+	// structured form input request (a provider question with a restricted
+	// schema, not a tool approval or a URL/OAuth consent). Default false: an
+	// unconfigured project behaves exactly as before, and the request is only
+	// visible through the existing UI/API pending state.
+	EscalateInputToOrchestrator bool `json:"escalateInputToOrchestrator,omitempty"`
 }
 
 // ContainerReapConfig is the project-level opt-out for #2652's Docker

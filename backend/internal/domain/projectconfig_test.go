@@ -64,6 +64,8 @@ func TestProjectConfigValidate(t *testing.T) {
 		{"tracker intake assignee with whitespace", ProjectConfig{TrackerIntake: TrackerIntakeConfig{Enabled: true, Assignee: " alice"}}, true},
 		{"auto review enabled", ProjectConfig{AutoReview: true}, false},
 		{"auto review disabled", ProjectConfig{AutoReview: false}, false},
+		{"input escalation enabled", ProjectConfig{EscalateInputToOrchestrator: true}, false},
+		{"input escalation disabled", ProjectConfig{EscalateInputToOrchestrator: false}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -212,5 +214,26 @@ func TestProjectConfigIsZero(t *testing.T) {
 	}
 	if (ProjectConfig{AutoReview: true}).IsZero() {
 		t.Fatal("config with autoReview enabled should not be zero")
+	}
+	if (ProjectConfig{EscalateInputToOrchestrator: true}).IsZero() {
+		t.Fatal("config with escalateInputToOrchestrator enabled should not be zero")
+	}
+}
+
+// TestProjectConfigEscalateInputToOrchestratorDefaultsOff proves the opt-in is
+// off unless a project sets it explicitly: an unconfigured project's resolved
+// config must never route a structured input request anywhere.
+func TestProjectConfigEscalateInputToOrchestratorDefaultsOff(t *testing.T) {
+	if (ProjectConfig{}).EscalateInputToOrchestrator {
+		t.Fatal("zero-value ProjectConfig must not enable input escalation")
+	}
+	if DefaultProjectConfig().EscalateInputToOrchestrator {
+		t.Fatal("DefaultProjectConfig must not enable input escalation")
+	}
+	if (ProjectConfig{}).WithDefaults().EscalateInputToOrchestrator {
+		t.Fatal("WithDefaults must not turn on input escalation for an unconfigured project")
+	}
+	if !(ProjectConfig{EscalateInputToOrchestrator: true}).WithDefaults().EscalateInputToOrchestrator {
+		t.Fatal("WithDefaults must preserve an explicit opt-in")
 	}
 }
