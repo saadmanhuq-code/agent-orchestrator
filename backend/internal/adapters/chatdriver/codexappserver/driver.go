@@ -291,6 +291,11 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 	if cfg.Model != "" {
 		params["model"] = cfg.Model
 	}
+	// Same override key the resume path uses: app-server takes the reasoning
+	// dial as a config value, not a thread/start parameter.
+	if cfg.Effort != "" {
+		params["config"] = map[string]any{"model_reasoning_effort": cfg.Effort}
+	}
 	if cfg.SystemPrompt != "" {
 		params["developerInstructions"] = cfg.SystemPrompt
 	}

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentruntime"
 )
 
 func TestManifest(t *testing.T) {
@@ -362,6 +363,12 @@ func TestGetConfigSpecReportsModelField(t *testing.T) {
 			Key:         "model",
 			Type:        ports.ConfigFieldString,
 			Description: "Model override passed to `agy --model` (e.g. gemini-3-pro).",
+		},
+		{
+			Key:         "effort",
+			Type:        ports.ConfigFieldEnum,
+			Description: "Reasoning effort passed to `agy --effort`. Agy tops out at high, so xhigh and max are clamped to high.",
+			Enum:        agentruntime.EffortLevels(),
 		},
 	}
 	if !reflect.DeepEqual(spec.Fields, want) {

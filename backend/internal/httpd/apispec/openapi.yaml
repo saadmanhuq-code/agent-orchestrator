@@ -7162,6 +7162,8 @@ components:
       type: object
     AgentConfig:
       properties:
+        effort:
+          type: string
         mode:
           type: string
         model:
@@ -11656,6 +11658,14 @@ components:
           type: string
         displayName:
           maxLength: 20
+          type: string
+        effort:
+          enum:
+          - low
+          - medium
+          - high
+          - xhigh
+          - max
           type: string
         harness:
           enum:

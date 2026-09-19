@@ -124,6 +124,12 @@ func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 				Description: "Model override passed to `claude --model` (e.g. claude-opus-4-5).",
 			},
 			{
+				Key:         "effort",
+				Type:        ports.ConfigFieldEnum,
+				Description: "Reasoning effort passed to `claude --effort`.",
+				Enum:        agentruntime.EffortLevels(),
+			},
+			{
 				Key:         "permissions",
 				Type:        ports.ConfigFieldEnum,
 				Description: "Starting permission mode.",
@@ -179,6 +185,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 		SessionID:        cfg.SessionID,
 		NativeSessionID:  cfg.NativeSessionID,
 		Model:            cfg.Config.Model,
+		Effort:           cfg.Config.Effort,
 		Prompt:           cfg.Prompt,
 		SystemPrompt:     cfg.SystemPrompt,
 		SystemPromptFile: cfg.SystemPromptFile,
@@ -238,10 +245,15 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 		return nil, false, err
 	}
 	return agentruntime.BuildRestoreCommand(agentruntime.RestoreConfig{
-		Harness:          agentruntime.HarnessClaudeCode,
-		Binary:           binary,
-		SessionID:        cfg.Session.ID,
-		Metadata:         cfg.Session.Metadata,
+		Harness:   agentruntime.HarnessClaudeCode,
+		Binary:    binary,
+		SessionID: cfg.Session.ID,
+		Metadata:  cfg.Session.Metadata,
+		// Effort is reapplied on resume. Unlike --model (deliberately not
+		// forwarded here so a resumed conversation keeps the model it was born
+		// with), the effort dial is a per-invocation session setting: dropping it
+		// would quietly downgrade a restored session to the CLI default.
+		Effort:           cfg.Config.Effort,
 		Prompt:           cfg.Prompt,
 		SystemPrompt:     cfg.SystemPrompt,
 		SystemPromptFile: cfg.SystemPromptFile,

@@ -77,6 +77,7 @@ type workspaceRepoDetails struct {
 type agentConfig struct {
 	Model       string `json:"model,omitempty"`
 	Mode        string `json:"mode,omitempty"`
+	Effort      string `json:"effort,omitempty"`
 	Permissions string `json:"permissions,omitempty"`
 }
 
@@ -137,6 +138,7 @@ type projectSetConfigOptions struct {
 	defaultBranch     string
 	sessionPrefix     string
 	model             string
+	effort            string
 	permission        string
 	workerAgent       string
 	orchestratorAgent string
@@ -330,6 +332,7 @@ func newProjectSetConfigCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.canonicalRepoURL, "canonical-repo-url", "", "Explicit upstream HTTPS repository URL for PR claims (same provider, host, and port as origin)")
 	f.StringVar(&opts.sessionPrefix, "session-prefix", "", "Displayed session-id prefix")
 	f.StringVar(&opts.model, "model", "", "Agent model override (e.g. claude-opus-4-5)")
+	f.StringVar(&opts.effort, "effort", "", "Reasoning effort for the project's sessions: low, medium, high, xhigh, max (daemon validates; agents that top out lower are clamped down)")
 	f.StringVar(&opts.permission, "permission", "", "Permission mode: default, accept-edits, auto, bypass-permissions")
 	f.StringVar(&opts.workerAgent, "worker-agent", "", "Harness override for worker sessions")
 	f.StringVar(&opts.orchestratorAgent, "orchestrator-agent", "", "Harness override for orchestrator sessions")
@@ -379,7 +382,7 @@ func buildProjectConfig(opts projectSetConfigOptions) (projectConfig, error) {
 		AgentRules:        opts.agentRules,
 		AgentRulesFile:    opts.agentRulesFile,
 		OrchestratorRules: opts.orchestratorRules,
-		AgentConfig:       agentConfig{Model: opts.model, Permissions: opts.permission},
+		AgentConfig:       agentConfig{Model: opts.model, Effort: opts.effort, Permissions: opts.permission},
 		Worker:            roleOverride{Agent: opts.workerAgent},
 		Orchestrator:      roleOverride{Agent: opts.orchestratorAgent},
 		TrackerIntake: trackerIntakeConfig{

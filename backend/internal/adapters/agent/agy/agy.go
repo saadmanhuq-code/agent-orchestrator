@@ -12,6 +12,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/agentbase"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentruntime"
 )
 
 const adapterID = "agy"
@@ -83,6 +84,12 @@ func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 				Type:        ports.ConfigFieldString,
 				Description: "Model override passed to `agy --model` (e.g. gemini-3-pro).",
 			},
+			{
+				Key:         "effort",
+				Type:        ports.ConfigFieldEnum,
+				Description: "Reasoning effort passed to `agy --effort`. Agy tops out at high, so xhigh and max are clamped to high.",
+				Enum:        agentruntime.EffortLevels(),
+			},
 		},
 	}, nil
 }
@@ -108,6 +115,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 	}
 
 	appendModelFlag(&cmd, cfg.Config)
+	appendEffortFlag(&cmd, cfg.Config)
 
 	if cfg.Prompt != "" {
 		cmd = append(cmd, "--prompt-interactive", cfg.Prompt)
@@ -144,6 +152,7 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 	}
 
 	appendModelFlag(&cmd, cfg.Config)
+	appendEffortFlag(&cmd, cfg.Config)
 
 	cmd = append(cmd, "--conversation", agentSessionID)
 	return cmd, true, nil
@@ -198,5 +207,17 @@ func (p *Plugin) agyBinary(ctx context.Context) (string, error) {
 func appendModelFlag(cmd *[]string, cfg ports.AgentConfig) {
 	if model := strings.TrimSpace(cfg.Model); model != "" {
 		*cmd = append(*cmd, "--model", model)
+	}
+}
+
+// appendEffortFlag appends `--effort <level>` when a reasoning-effort rung is
+// configured. Confirmed via `agy --help`: "--effort  Reasoning effort for the
+// current CLI session (low|medium|high)". Agy's ladder stops at high, so a
+// requested xhigh or max is clamped down to high rather than failing the
+// launch: running one rung lower beats not running. A blank value appends
+// nothing, leaving the command exactly as it was before this dial existed.
+func appendEffortFlag(cmd *[]string, cfg ports.AgentConfig) {
+	if level := agentruntime.ClampEffort(cfg.Effort, agentruntime.EffortHigh); level != "" {
+		*cmd = append(*cmd, "--effort", level)
 	}
 }

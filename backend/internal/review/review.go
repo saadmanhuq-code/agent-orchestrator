@@ -1329,6 +1329,9 @@ func mergeReviewerAgentConfig(base, override domain.AgentConfig) domain.AgentCon
 	if override.Mode != "" {
 		base.Mode = override.Mode
 	}
+	if override.Effort != "" {
+		base.Effort = override.Effort
+	}
 	if override.Permissions != "" {
 		base.Permissions = override.Permissions
 	}

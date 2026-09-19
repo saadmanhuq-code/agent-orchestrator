@@ -13,6 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentruntime"
 )
 
 // maxDisplayNameLen caps the sidebar label set by `--name`. Mirrored by the
@@ -29,6 +31,7 @@ type spawnOptions struct {
 	issue           string
 	name            string
 	model           string
+	effort          string
 	claimPR         string
 	noTakeover      bool
 	skipAgentCheck  bool
@@ -47,6 +50,7 @@ type spawnRequest struct {
 	Branch          string `json:"branch,omitempty"`
 	Prompt          string `json:"prompt,omitempty"`
 	Model           string `json:"model,omitempty"`
+	Effort          string `json:"effort,omitempty"`
 	DisplayName     string `json:"displayName"`
 }
 
@@ -88,6 +92,16 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 			}
 			if opts.kind != "" && opts.kind != "worker" && opts.kind != "orchestrator" {
 				return usageError{fmt.Errorf(`--kind must be "worker" or "orchestrator"`)}
+			}
+
+			// Rejected here rather than forwarded so a typo exits 2 as a usage
+			// error, the same treatment --mode and --kind get. A level the chosen
+			// agent cannot reach is a different matter: the daemon clamps it down
+			// at launch rather than refusing to start the session.
+			effort := strings.ToLower(strings.TrimSpace(opts.effort))
+			if !agentruntime.ValidEffort(effort) {
+				return usageError{fmt.Errorf("--effort must be one of %s",
+					strings.Join(agentruntime.EffortLevels(), ", "))}
 			}
 
 			tp := strings.TrimSpace(opts.trackerProvider)
@@ -142,6 +156,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 				Branch:          opts.branch,
 				Prompt:          opts.prompt,
 				Model:           strings.TrimSpace(opts.model),
+				Effort:          effort,
 				DisplayName:     name,
 			}
 			var res spawnResult
@@ -197,6 +212,7 @@ func newSpawnCommand(ctx *commandContext) *cobra.Command {
 	f.StringVar(&opts.branch, "branch", "", "Branch for git project sessions (default: ao/<session-id>/root; unsupported for Scratch)")
 	f.StringVar(&opts.prompt, "prompt", "", "Initial prompt for the agent")
 	f.StringVar(&opts.model, "model", "", "Agent model override for this session only (e.g. sonnet, gpt-5.6-sol); overrides project/role config without changing it")
+	f.StringVar(&opts.effort, "effort", "", "Reasoning effort for this session only: low, medium, high, xhigh, max; overrides project/role config without changing it. Agents that top out lower (e.g. agy at high) are clamped down, not failed")
 	f.StringVar(&opts.issue, "issue", "", "Issue id to associate with the session")
 	f.StringVar(&opts.trackerProvider, "tracker-provider", "github", "Issue tracker provider: github or gitlab (default: github)")
 	f.StringVar(&opts.name, "name", "", "Display name shown in the sidebar (required, max 20 characters)")

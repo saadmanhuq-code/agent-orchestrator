@@ -26,6 +26,7 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/sessionguard"
 	"github.com/aoagents/agent-orchestrator/backend/internal/skillassets"
 	"github.com/aoagents/agent-orchestrator/backend/internal/tmuxbin"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentruntime"
 )
 
 // Sentinel errors returned by the Session Manager; callers match them with
@@ -862,6 +863,14 @@ func (m *Manager) Spawn(ctx context.Context, cfg ports.SpawnConfig) (domain.Sess
 	if err := validateSpawnModel(cfg.Harness, agentConfig.Model); err != nil {
 		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: %s", ErrUnsupportedModel, err.Error())
 	}
+	// An effort level outside AO's ladder is a caller mistake, not something to
+	// clamp: clamping a typo would silently run the session at a level nobody
+	// asked for. A level AO knows but the harness cannot reach is a different
+	// case and is clamped down inside the adapter.
+	if !agentruntime.ValidEffort(agentConfig.Effort) {
+		return domain.SessionRecord{}, 0, 0, fmt.Errorf("spawn: %w: effort %q is not one of %s",
+			ErrUnsupportedModel, agentConfig.Effort, strings.Join(agentruntime.EffortLevels(), ", "))
+	}
 	// Adapters whose model picker is an agent-owned mode list (e.g. Amp) keep
 	// their selectable values in AgentConfig.Mode. Normalize a copy for the
 	// adapter so `ao spawn --agent amp --model high` launches Amp with `--mode
@@ -1427,6 +1436,9 @@ func effectiveAgentConfig(kind domain.SessionKind, cfg domain.ProjectConfig) por
 	if override.Mode != "" {
 		merged.Mode = override.Mode
 	}
+	if override.Effort != "" {
+		merged.Effort = override.Effort
+	}
 	if override.Permissions != "" {
 		merged.Permissions = override.Permissions
 	}
@@ -1439,6 +1451,9 @@ func applySpawnAgentConfig(base, override ports.AgentConfig) ports.AgentConfig {
 	}
 	if override.Mode != "" {
 		base.Mode = override.Mode
+	}
+	if override.Effort != "" {
+		base.Effort = override.Effort
 	}
 	if override.Permissions != "" {
 		base.Permissions = override.Permissions

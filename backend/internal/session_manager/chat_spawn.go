@@ -67,8 +67,11 @@ type ChatStart struct {
 	// Env carries the HookPATH-pinned PATH, which is how the agent's own shell
 	// commands find `ao`. An orchestrator delegates by running `ao spawn`, so
 	// without this a chat orchestrator could talk but not work.
-	Env                     map[string]string
-	Model                   string
+	Env   map[string]string
+	Model string
+	// Effort is the resolved reasoning-effort rung for this session. Empty means
+	// AO sends no effort setting, keeping the provider's own default.
+	Effort                  string
 	Permissions             ports.PermissionMode
 	SystemPrompt            string
 	AdditionalDirectories   []string
@@ -192,6 +195,7 @@ func (m *Manager) launchChatController(ctx context.Context, in chatSpawn) (domai
 		WorkspacePath:           in.workspace.Path,
 		Env:                     env,
 		Model:                   agentConfig.Model,
+		Effort:                  agentConfig.Effort,
 		Permissions:             agentConfig.Permissions,
 		SystemPrompt:            in.systemPrompt,
 		AdditionalDirectories:   workspaceProjectDirectories(in.workspace.Path, in.workspaceProject),
@@ -407,6 +411,7 @@ func (m *Manager) resumeChatController(
 		WorkspacePath:           ws.Path,
 		Env:                     env,
 		Model:                   agentConfig.Model,
+		Effort:                  agentConfig.Effort,
 		Permissions:             agentConfig.Permissions,
 		SystemPrompt:            systemPrompt,
 		AdditionalDirectories:   additionalDirectories,

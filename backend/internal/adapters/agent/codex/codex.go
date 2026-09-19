@@ -107,6 +107,12 @@ func (p *Plugin) GetConfigSpec(ctx context.Context) (ports.ConfigSpec, error) {
 				Type:        ports.ConfigFieldString,
 				Description: "Model override passed to `codex --model`.",
 			},
+			{
+				Key:         "effort",
+				Type:        ports.ConfigFieldEnum,
+				Description: "Reasoning effort passed as `codex -c model_reasoning_effort`.",
+				Enum:        agentruntime.EffortLevels(),
+			},
 		},
 	}, nil
 }
@@ -132,6 +138,7 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, cfg ports.LaunchConfig) (
 		Binary:           binary,
 		WorkspacePath:    cfg.WorkspacePath,
 		Model:            cfg.Config.Model,
+		Effort:           cfg.Config.Effort,
 		Prompt:           cfg.Prompt,
 		SystemPrompt:     cfg.SystemPrompt,
 		SystemPromptFile: cfg.SystemPromptFile,
@@ -172,6 +179,7 @@ func (p *Plugin) GetRestoreCommand(ctx context.Context, cfg ports.RestoreConfig)
 		Metadata:         cfg.Session.Metadata,
 		WorkspacePath:    cfg.Session.WorkspacePath,
 		Model:            cfg.Config.Model,
+		Effort:           cfg.Config.Effort,
 		Prompt:           cfg.Prompt,
 		SystemPrompt:     cfg.SystemPrompt,
 		SystemPromptFile: cfg.SystemPromptFile,

@@ -12,6 +12,7 @@ import (
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentruntime"
 )
 
 func TestResolveCodexBinaryFindsLocalAppDataNPMShimOnWindows(t *testing.T) {
@@ -638,6 +639,12 @@ func TestGetConfigSpecReportsModelField(t *testing.T) {
 			Key:         "model",
 			Type:        ports.ConfigFieldString,
 			Description: "Model override passed to `codex --model`.",
+		},
+		{
+			Key:         "effort",
+			Type:        ports.ConfigFieldEnum,
+			Description: "Reasoning effort passed as `codex -c model_reasoning_effort`.",
+			Enum:        agentruntime.EffortLevels(),
 		},
 	}
 	if !reflect.DeepEqual(spec.Fields, want) {

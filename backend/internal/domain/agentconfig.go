@@ -1,6 +1,11 @@
 package domain
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/aoagents/agent-orchestrator/backend/pkg/agentruntime"
+)
 
 // PermissionMode controls how much review an agent requires before acting. It
 // lives in domain (not ports) so the typed AgentConfig can carry it; ports
@@ -28,6 +33,12 @@ type AgentConfig struct {
 	// Mode selects an agent-owned operating mode when the adapter exposes modes
 	// instead of raw model ids (currently Amp: low|medium|high|ultra).
 	Mode string `json:"mode,omitempty"`
+	// Effort is the reasoning-effort rung the agent launches at:
+	// low|medium|high|xhigh|max. Empty means AO passes no effort setting at all,
+	// which leaves the launch command exactly as it was before this dial
+	// existed. A rung the selected CLI cannot reach is clamped down at launch
+	// rather than failing the spawn.
+	Effort string `json:"effort,omitempty"`
 	// Permissions sets the agent's starting permission mode. Empty inherits the
 	// project/role preference; new sessions fall back to Auto when none is saved.
 	// Other adapter callers retain their existing baseline for an empty value.
@@ -60,6 +71,10 @@ func (c AgentConfig) Validate() error {
 	case "", "low", "medium", "high", "ultra":
 	default:
 		return fmt.Errorf("invalid mode %q: want one of low, medium, high, ultra", c.Mode)
+	}
+	if !agentruntime.ValidEffort(c.Effort) {
+		return fmt.Errorf("invalid effort %q: want one of %s",
+			c.Effort, strings.Join(agentruntime.EffortLevels(), ", "))
 	}
 	if c.Permissions.Valid() {
 		return nil

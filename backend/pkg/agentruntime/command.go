@@ -51,12 +51,17 @@ var claudeSessionNamespace = uuid.MustParse("a1f0c3d2-7b54-4e96-8a2b-0d9e1f2a3b4
 
 // LaunchConfig contains the inputs common to a fresh provider process.
 type LaunchConfig struct {
-	Harness          Harness
-	Binary           string
-	SessionID        string
-	NativeSessionID  string
-	WorkspacePath    string
-	Model            string
+	Harness         Harness
+	Binary          string
+	SessionID       string
+	NativeSessionID string
+	WorkspacePath   string
+	Model           string
+	// Effort is the optional reasoning-effort rung for this session. Empty
+	// appends nothing, so an unset dial produces the exact command line AO built
+	// before the dial existed. A level the harness cannot reach is clamped down,
+	// never rejected.
+	Effort           string
 	Prompt           string
 	SystemPrompt     string
 	SystemPromptFile string
@@ -71,12 +76,16 @@ type LaunchConfig struct {
 
 // RestoreConfig contains the inputs needed to resume a native conversation.
 type RestoreConfig struct {
-	Harness          Harness
-	Binary           string
-	SessionID        string
-	Metadata         map[string]string
-	WorkspacePath    string
-	Model            string
+	Harness       Harness
+	Binary        string
+	SessionID     string
+	Metadata      map[string]string
+	WorkspacePath string
+	Model         string
+	// Effort is the reasoning-effort rung to reapply when a session is resumed.
+	// A restore that dropped it would silently downgrade a session's dial after
+	// a daemon restart. Empty appends nothing.
+	Effort           string
 	Prompt           string
 	SystemPrompt     string
 	SystemPromptFile string
@@ -225,6 +234,7 @@ func buildClaudeLaunch(cfg LaunchConfig) ([]string, error) {
 	if model := strings.TrimSpace(cfg.Model); model != "" {
 		cmd = append(cmd, "--model", model)
 	}
+	cmd = append(cmd, ClaudeEffortArgs(cfg.Effort)...)
 	var err error
 	cmd, err = appendClaudeSystemPrompt(cmd, cfg.SystemPromptFile, cfg.SystemPrompt)
 	if err != nil {
@@ -241,6 +251,7 @@ func buildClaudeRestore(cfg RestoreConfig, identity string) ([]string, error) {
 	cmd = append(cmd, ClaudePermissionArgs(cfg.Permission)...)
 	cmd = appendClaudeToolArgs(cmd, cfg.AllowedTools, cfg.DisallowedTools)
 	cmd = append(cmd, cfg.ProviderArgs...)
+	cmd = append(cmd, ClaudeEffortArgs(cfg.Effort)...)
 	var err error
 	cmd, err = appendClaudeSystemPrompt(cmd, cfg.SystemPromptFile, cfg.SystemPrompt)
 	if err != nil {
@@ -289,7 +300,7 @@ func appendClaudeSystemPrompt(cmd []string, promptFile, prompt string) ([]string
 
 func buildCodexLaunch(cfg LaunchConfig) []string {
 	cmd := codexBaseCommand(cfg.Binary, cfg.Permission, cfg.ProviderArgs)
-	cmd = appendCodexCommon(cmd, cfg.WorkspacePath, cfg.Model, cfg.SystemPromptFile, cfg.SystemPrompt)
+	cmd = appendCodexCommon(cmd, cfg.WorkspacePath, cfg.Model, cfg.Effort, cfg.SystemPromptFile, cfg.SystemPrompt)
 	if cfg.Prompt != "" {
 		cmd = append(cmd, "--", cfg.Prompt)
 	}
@@ -298,7 +309,7 @@ func buildCodexLaunch(cfg LaunchConfig) []string {
 
 func buildCodexRestore(cfg RestoreConfig, identity string) []string {
 	cmd := append([]string{cfg.Binary, "resume"}, codexBaseArgs(cfg.Permission, cfg.ProviderArgs)...)
-	cmd = appendCodexCommon(cmd, cfg.WorkspacePath, cfg.Model, cfg.SystemPromptFile, cfg.SystemPrompt)
+	cmd = appendCodexCommon(cmd, cfg.WorkspacePath, cfg.Model, cfg.Effort, cfg.SystemPromptFile, cfg.SystemPrompt)
 	cmd = append(cmd, identity)
 	if cfg.Prompt != "" {
 		cmd = append(cmd, "--", cfg.Prompt)
@@ -320,11 +331,12 @@ func codexBaseArgs(policy PermissionPolicy, providerArgs []string) []string {
 	return append(args, providerArgs...)
 }
 
-func appendCodexCommon(cmd []string, workspace, model, promptFile, prompt string) []string {
+func appendCodexCommon(cmd []string, workspace, model, effort, promptFile, prompt string) []string {
 	cmd = append(cmd, CodexWorkspaceTrustArgs(workspace)...)
 	if model = strings.TrimSpace(model); model != "" {
 		cmd = append(cmd, "--model", model)
 	}
+	cmd = append(cmd, CodexEffortArgs(effort)...)
 	if promptFile != "" {
 		return append(cmd, "-c", "model_instructions_file="+promptFile)
 	}
