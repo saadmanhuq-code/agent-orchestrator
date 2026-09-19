@@ -231,3 +231,139 @@ func TestConversationInputRespond_DaemonNotRunningExits1(t *testing.T) {
 		t.Fatalf("exit code = %d, want 1", got)
 	}
 }
+
+// The one real approval path: a provider-offered decision id reaches the
+// existing approvals resolve endpoint untouched.
+func TestConversationApprovalRespond_DecisionReachesResolveEndpoint(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := conversationInputServer(t, http.StatusNoContent, "")
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, aliveDeps(),
+		"conversation", "approval", "respond", "worker-1", "--request", "req-7", "--decision", "accept")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+	if capture.method != http.MethodPost {
+		t.Fatalf("method = %s, want POST", capture.method)
+	}
+	if capture.path != "/api/v1/sessions/worker-1/conversation/approvals/req-7/resolve" {
+		t.Fatalf("path = %q", capture.path)
+	}
+	var req conversationApprovalResolveRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatalf("decode body: %v\nbody=%s", err, capture.body)
+	}
+	if req.DecisionID != "accept" {
+		t.Fatalf("decisionId = %q, want accept", req.DecisionID)
+	}
+	if !strings.Contains(out, "req-7") || !strings.Contains(out, "worker-1") || !strings.Contains(out, "accept") {
+		t.Fatalf("output = %q, want it to name the request, session, and decision", out)
+	}
+}
+
+// Same escaping contract as the input path: approval request ids come from
+// the same providers, so an ACP-style id must reach the wire escaped and
+// round-trip back through the daemon's own url.PathUnescape.
+func TestConversationApprovalRespond_EncodesRequestIDForTheURLPath(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, capture := conversationInputServer(t, http.StatusNoContent, "")
+	writeRunFileFor(t, cfg, srv)
+
+	const requestID = "acp-request:host-1:7 needs encoding"
+	_, errOut, err := executeCLI(t, aliveDeps(),
+		"conversation", "approval", "respond", "worker-1", "--request", requestID, "--decision", "accept")
+	if err != nil {
+		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
+	}
+
+	const wantPrefix = "/api/v1/sessions/worker-1/conversation/approvals/"
+	const wantSuffix = "/resolve"
+	if !strings.HasPrefix(capture.requestURI, wantPrefix) || !strings.HasSuffix(capture.requestURI, wantSuffix) {
+		t.Fatalf("request-uri = %q, want prefix %q and suffix %q", capture.requestURI, wantPrefix, wantSuffix)
+	}
+	encoded := strings.TrimSuffix(strings.TrimPrefix(capture.requestURI, wantPrefix), wantSuffix)
+	if encoded == requestID {
+		t.Fatalf("request id reached the wire unescaped: %q", encoded)
+	}
+	got, err := url.PathUnescape(encoded)
+	if err != nil {
+		t.Fatalf("the daemon's own unescape (url.PathUnescape) would fail on %q: %v", encoded, err)
+	}
+	if got != requestID {
+		t.Fatalf("round-tripped request id = %q, want %q", got, requestID)
+	}
+}
+
+func TestConversationApprovalRespond_MissingSessionIsUsageError(t *testing.T) {
+	setConfigEnv(t)
+	_, _, err := executeCLI(t, aliveDeps(), "conversation", "approval", "respond", "--request", "req-7", "--decision", "accept")
+	if err == nil {
+		t.Fatal("expected usage error for missing session id")
+	}
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("exit code = %d, want 2", got)
+	}
+}
+
+func TestConversationApprovalRespond_MissingRequestIsUsageError(t *testing.T) {
+	setConfigEnv(t)
+	_, _, err := executeCLI(t, aliveDeps(), "conversation", "approval", "respond", "worker-1", "--decision", "accept")
+	if err == nil {
+		t.Fatal("expected usage error for missing --request")
+	}
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("exit code = %d, want 2", got)
+	}
+	if !strings.Contains(err.Error(), "--request is required") {
+		t.Fatalf("error missing usage message: %v", err)
+	}
+}
+
+func TestConversationApprovalRespond_MissingDecisionIsUsageError(t *testing.T) {
+	setConfigEnv(t)
+	_, _, err := executeCLI(t, aliveDeps(), "conversation", "approval", "respond", "worker-1", "--request", "req-7")
+	if err == nil {
+		t.Fatal("expected usage error for missing --decision")
+	}
+	if got := ExitCode(err); got != 2 {
+		t.Fatalf("exit code = %d, want 2", got)
+	}
+	if !strings.Contains(err.Error(), "--decision is required") {
+		t.Fatalf("error missing usage message: %v", err)
+	}
+}
+
+// A daemon-side validation rejection (unknown decision id, already-resolved
+// request) is a runtime failure, not a usage error, and must surface the
+// envelope.
+func TestConversationApprovalRespond_ServerRejectionExits1(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := conversationInputServer(t, http.StatusBadRequest,
+		`{"error":"validation","code":"CHAT_DECISION_REQUIRED","message":"decisionId is required"}`)
+	writeRunFileFor(t, cfg, srv)
+
+	_, errOut, err := executeCLI(t, aliveDeps(),
+		"conversation", "approval", "respond", "worker-1", "--request", "req-7", "--decision", "accept")
+	if err == nil {
+		t.Fatal("expected runtime error from 400")
+	}
+	if got := ExitCode(err); got != 1 {
+		t.Fatalf("exit code = %d, want 1", got)
+	}
+	if !strings.Contains(err.Error(), "CHAT_DECISION_REQUIRED") && !strings.Contains(errOut, "CHAT_DECISION_REQUIRED") {
+		t.Fatalf("error did not surface the server error envelope: %v\nstderr=%s", err, errOut)
+	}
+}
+
+func TestConversationApprovalRespond_DaemonNotRunningExits1(t *testing.T) {
+	setConfigEnv(t)
+	_, _, err := executeCLI(t, aliveDeps(),
+		"conversation", "approval", "respond", "worker-1", "--request", "req-7", "--decision", "accept")
+	if err == nil {
+		t.Fatal("expected error when daemon is not running")
+	}
+	if got := ExitCode(err); got != 1 {
+		t.Fatalf("exit code = %d, want 1", got)
+	}
+}

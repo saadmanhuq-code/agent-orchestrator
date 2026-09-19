@@ -11,22 +11,23 @@ import (
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
-// chatInputEscalationStore is the narrow project/session read surface chat
-// input escalation needs. *sqlite.Store satisfies it; ListSessions is the
-// same project-session-discovery call the rest of the daemon already uses, so
-// this adds no new indexing or query.
-type chatInputEscalationStore interface {
+// chatEscalationStore is the narrow project/session read surface chat
+// escalation needs — shared by structured input routing and tool approval
+// routing. *sqlite.Store satisfies it; ListSessions is the same
+// project-session-discovery call the rest of the daemon already uses, so this
+// adds no new indexing or query.
+type chatEscalationStore interface {
 	GetProject(ctx context.Context, id string) (domain.ProjectRecord, bool, error)
 	ListSessions(ctx context.Context, project domain.ProjectID) ([]domain.SessionRecord, error)
 }
 
-// chatInputEscalationMessenger delivers a message into an existing session by
+// chatEscalationMessenger delivers a message into an existing session by
 // id, exactly like `ao send` / POST /sessions/{id}/send. *sessionmanager.Manager
 // satisfies it, which is what makes the delivered message land through the
 // same mode-aware routing as any other send: a Chat-mode target gets a
 // MessageOriginAutomation turn (see Service.RelayChatTurn), a TUI-mode target
 // gets its runtime pane written to. This wiring adds no second delivery path.
-type chatInputEscalationMessenger interface {
+type chatEscalationMessenger interface {
 	Send(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment) error
 }
 
@@ -43,8 +44,8 @@ type chatInputEscalationMessenger interface {
 // notification did not go out, never that the request was lost or answered.
 func escalateChatInputRequest(
 	ctx context.Context,
-	store chatInputEscalationStore,
-	messenger chatInputEscalationMessenger,
+	store chatEscalationStore,
+	messenger chatEscalationMessenger,
 	log *slog.Logger,
 	sessionID domain.SessionID,
 	projectID domain.ProjectID,
@@ -61,7 +62,7 @@ func escalateChatInputRequest(
 		return
 	}
 
-	target, ok, err := resolveChatInputEscalationTarget(ctx, store, sessionID, projectID)
+	target, ok, err := resolveChatEscalationTarget(ctx, store, sessionID, projectID)
 	if err != nil {
 		log.Error("chat input escalation: resolve current orchestrator failed",
 			"session", sessionID, "project", projectID, "request", requestID, "error", err)
@@ -80,15 +81,17 @@ func escalateChatInputRequest(
 	}
 }
 
-// resolveChatInputEscalationTarget picks the one session in project that may
-// receive the escalation: a non-terminated orchestrator, other than the
-// worker session that is itself waiting on the request. Zero or more than one
-// candidate is reported as not-ok rather than guessed at — an ambiguous or
-// absent orchestrator must leave the request exactly as pending as it already
-// is, not pick a plausible-looking session.
-func resolveChatInputEscalationTarget(
+// resolveChatEscalationTarget picks the one session in project that may
+// receive an escalation — shared by structured input routing and tool
+// approval routing, which differ only in their opt-in flag and message.
+// The target is a non-terminated orchestrator, other than the worker session
+// that is itself waiting on the request. Zero or more than one candidate is
+// reported as not-ok rather than guessed at — an ambiguous or absent
+// orchestrator must leave the request exactly as pending as it already is,
+// not pick a plausible-looking session.
+func resolveChatEscalationTarget(
 	ctx context.Context,
-	store chatInputEscalationStore,
+	store chatEscalationStore,
 	requestingSession domain.SessionID,
 	projectID domain.ProjectID,
 ) (domain.SessionID, bool, error) {

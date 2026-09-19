@@ -10513,6 +10513,8 @@ components:
           additionalProperties:
             type: string
           type: object
+        escalateApprovalsToOrchestrator:
+          type: boolean
         escalateInputToOrchestrator:
           type: boolean
         orchestrator:

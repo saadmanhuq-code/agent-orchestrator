@@ -186,9 +186,19 @@ type Controller struct {
 	// request (ports.ChatInputModeForm) durably persists for this session. It is
 	// daemon-owned routing's decision whether the owning project opted in and
 	// who the current orchestrator is; this hook only reports the fact. Never
-	// invoked for a URL/OAuth elicitation or a tool approval — those are not a
-	// question an orchestrator can answer on the user's behalf.
+	// invoked for a URL/OAuth elicitation — consent to open a link is not a
+	// question an orchestrator can answer on the user's behalf — or for a
+	// tool approval, which rides its own hook below.
 	onInputEscalation func(ctx context.Context, sessionID domain.SessionID, projectID domain.ProjectID, requestID string, input ports.ChatInputRequest)
+	// onApprovalEscalation, when set, is notified after a tool approval
+	// request (ports.ChatEventApprovalRequested) durably persists for this
+	// session, carrying the provider's summary and offered decisions exactly
+	// as the event reported them. Like onInputEscalation it only reports the
+	// fact; daemon-owned routing decides whether the project opted in and who
+	// the current orchestrator is. Never invoked for a structured input
+	// request — answers there carry typed form data, not a provider-offered
+	// permission id, so the two hooks stay separate by construction.
+	onApprovalEscalation func(ctx context.Context, sessionID domain.SessionID, projectID domain.ProjectID, requestID string, summary string, decisions []ports.ChatDecisionOption)
 
 	// sendMu serializes command dispatch so only one operation mutates the
 	// provider conversation at a time.
@@ -306,6 +316,7 @@ func newController(
 	onAccountChanged func(domain.SessionID, string, domain.AgentHarness),
 	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation),
 	onInputEscalation func(ctx context.Context, sessionID domain.SessionID, projectID domain.ProjectID, requestID string, input ports.ChatInputRequest),
+	onApprovalEscalation func(ctx context.Context, sessionID domain.SessionID, projectID domain.ProjectID, requestID string, summary string, decisions []ports.ChatDecisionOption),
 ) *Controller {
 	c := &Controller{
 		sessionID:              sessionID,
@@ -321,6 +332,7 @@ func newController(
 		onAccountChanged:       onAccountChanged,
 		onCodexCapacityChanged: onCodexCapacityChanged,
 		onInputEscalation:      onInputEscalation,
+		onApprovalEscalation:   onApprovalEscalation,
 		state:                  ports.ChatControllerReady,
 		settings:               conversation.Settings,
 		mcpServers:             map[string]domain.ConversationMCPServer{},
@@ -2789,6 +2801,16 @@ func (c *Controller) afterProject(ctx context.Context, event ports.ChatEvent, pr
 		c.drainLocked(ctx, event.TurnState == domain.TurnStateCompleted)
 	case ports.ChatEventApprovalRequested:
 		c.reportActivity(ctx, domain.ActivityWaitingInput, "chat.approval.requested", now)
+		// Approval escalation rides the same once-per-newly-projected-event
+		// gate as input escalation (see projectEvent's dedup on
+		// c.store.ProjectProviderEvent): this branch only runs outside
+		// history reconstruction, so a replayed/duplicate event cannot fire
+		// it twice. The request id is the only gate — even an approval with
+		// no offered decisions still blocks the worker, and the orchestrator
+		// is told exactly that rather than left guessing.
+		if c.onApprovalEscalation != nil && event.RequestID != "" {
+			c.onApprovalEscalation(ctx, c.sessionID, c.conversation.ProjectID, event.RequestID, event.Summary, event.Decisions)
+		}
 	case ports.ChatEventApprovalResolved:
 		c.reportInteractionResolved(ctx, "chat.approval.resolved", now)
 	case ports.ChatEventInputRequested:

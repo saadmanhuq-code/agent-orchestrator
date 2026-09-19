@@ -164,10 +164,10 @@ func TestEscalateChatInputRequest_ExcludesWorkerSelfAndOtherProject(t *testing.T
 	}
 }
 
-// resolveChatInputEscalationTarget is the pure decision at the center of
+// resolveChatEscalationTarget is the pure decision at the center of
 // escalation. Table-test its absent/ambiguous/terminated/eligible outcomes
 // directly, independent of the project opt-in check.
-func TestResolveChatInputEscalationTarget(t *testing.T) {
+func TestResolveChatEscalationTarget(t *testing.T) {
 	const requester = domain.SessionID("worker-1")
 	tests := []struct {
 		name     string
@@ -209,7 +209,7 @@ func TestResolveChatInputEscalationTarget(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := &fakeChatEscalationStore{sessions: map[domain.ProjectID][]domain.SessionRecord{escalationProject: tt.sessions}}
-			gotID, gotOK, err := resolveChatInputEscalationTarget(context.Background(), store, requester, escalationProject)
+			gotID, gotOK, err := resolveChatEscalationTarget(context.Background(), store, requester, escalationProject)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}

@@ -457,6 +457,16 @@ func Run() error {
 			}
 			escalateChatInputRequest(escCtx, store, sessMgr, log, sessionID, projectID, requestID, input)
 		},
+		// OnApprovalEscalation routes a tool approval request to the project's
+		// current orchestrator under its own opt-in (see
+		// chat_approval_escalation_wiring.go). Same nil-sessMgr guard as the
+		// input hook above: no manager yet means nothing to notify.
+		OnApprovalEscalation: func(escCtx context.Context, sessionID domain.SessionID, projectID domain.ProjectID, requestID string, summary string, decisions []ports.ChatDecisionOption) {
+			if sessMgr == nil {
+				return
+			}
+			escalateChatApprovalRequest(escCtx, store, sessMgr, log, sessionID, projectID, requestID, summary, decisions)
+		},
 	})
 
 	codexModelDriver := codexappserver.New(codexagent.New(), log)

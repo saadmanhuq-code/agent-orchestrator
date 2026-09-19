@@ -46,6 +46,7 @@ type Service struct {
 	onAccountChanged       func(domain.SessionID, string, domain.AgentHarness)
 	onCodexCapacityChanged func(domain.SessionID, string, ports.CodexCapacityObservation)
 	onInputEscalation      func(ctx context.Context, sessionID domain.SessionID, projectID domain.ProjectID, requestID string, input ports.ChatInputRequest)
+	onApprovalEscalation   func(ctx context.Context, sessionID domain.SessionID, projectID domain.ProjectID, requestID string, summary string, decisions []ports.ChatDecisionOption)
 	stopProviderHost       func(context.Context, domain.SessionID) error
 
 	mu           sync.RWMutex
@@ -98,6 +99,13 @@ type Options struct {
 	// any project's opt-in — production always wires a daemon-owned router that
 	// itself checks the project config before doing anything.
 	OnInputEscalation func(ctx context.Context, sessionID domain.SessionID, projectID domain.ProjectID, requestID string, input ports.ChatInputRequest)
+	// OnApprovalEscalation is notified after a tool approval request durably
+	// persists, carrying the provider's one-line summary and the exact
+	// decision options the provider offered. Nil leaves approval escalation
+	// off, independent of OnInputEscalation and of any project's opt-in —
+	// production wires a daemon-owned router that itself checks the project
+	// config before doing anything.
+	OnApprovalEscalation func(ctx context.Context, sessionID domain.SessionID, projectID domain.ProjectID, requestID string, summary string, decisions []ports.ChatDecisionOption)
 	// StopProviderHost destroys current session ownership on explicit teardown,
 	// even if its daemon attachment already failed. Never used by StopAll.
 	StopProviderHost func(context.Context, domain.SessionID) error
@@ -126,6 +134,7 @@ func New(opts Options) *Service {
 		onAccountChanged:       opts.OnAccountChanged,
 		onCodexCapacityChanged: opts.OnCodexCapacityChanged,
 		onInputEscalation:      opts.OnInputEscalation,
+		onApprovalEscalation:   opts.OnApprovalEscalation,
 		stopProviderHost:       opts.StopProviderHost,
 		controllers:            make(map[domain.SessionID]*Controller),
 		startConfigs:           make(map[domain.SessionID]StartConfig),
@@ -587,7 +596,7 @@ func (s *Service) Start(ctx context.Context, cfg StartConfig) (*Controller, erro
 	// A fresh generation per launch, so events from the controller this one
 	// replaced can be told apart from the current one's.
 	controller := newController(
-		cfg.SessionID, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged, s.onInputEscalation)
+		cfg.SessionID, conversation, generation, cfg.Harness, conv, s.store, s.activity, s.log, s.newID, s.now, s.onAccountChanged, s.onCodexCapacityChanged, s.onInputEscalation, s.onApprovalEscalation)
 	var commitProviderHistory func(context.Context) error
 	if liveReconnect {
 		providerTurnID := controller.restoreLiveTurnOwnership(liveRows.Turns)

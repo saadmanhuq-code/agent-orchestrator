@@ -81,6 +81,15 @@ type ProjectConfig struct {
 	// unconfigured project behaves exactly as before, and the request is only
 	// visible through the existing UI/API pending state.
 	EscalateInputToOrchestrator bool `json:"escalateInputToOrchestrator,omitempty"`
+
+	// EscalateApprovalsToOrchestrator opts this project into notifying its
+	// current orchestrator session when a worker's Chat conversation persists
+	// a tool approval request (a provider permission question with offered
+	// decisions, not a structured form input or a URL/OAuth consent).
+	// Default false, independent of EscalateInputToOrchestrator: an
+	// unconfigured project behaves exactly as before, and the approval is
+	// only visible through the existing UI/API pending state.
+	EscalateApprovalsToOrchestrator bool `json:"escalateApprovalsToOrchestrator,omitempty"`
 }
 
 // ContainerReapConfig is the project-level opt-out for #2652's Docker

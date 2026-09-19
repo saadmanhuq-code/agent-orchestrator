@@ -66,6 +66,8 @@ func TestProjectConfigValidate(t *testing.T) {
 		{"auto review disabled", ProjectConfig{AutoReview: false}, false},
 		{"input escalation enabled", ProjectConfig{EscalateInputToOrchestrator: true}, false},
 		{"input escalation disabled", ProjectConfig{EscalateInputToOrchestrator: false}, false},
+		{"approval escalation enabled", ProjectConfig{EscalateApprovalsToOrchestrator: true}, false},
+		{"approval escalation disabled", ProjectConfig{EscalateApprovalsToOrchestrator: false}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -218,6 +220,9 @@ func TestProjectConfigIsZero(t *testing.T) {
 	if (ProjectConfig{EscalateInputToOrchestrator: true}).IsZero() {
 		t.Fatal("config with escalateInputToOrchestrator enabled should not be zero")
 	}
+	if (ProjectConfig{EscalateApprovalsToOrchestrator: true}).IsZero() {
+		t.Fatal("config with escalateApprovalsToOrchestrator enabled should not be zero")
+	}
 }
 
 // TestProjectConfigEscalateInputToOrchestratorDefaultsOff proves the opt-in is
@@ -235,5 +240,27 @@ func TestProjectConfigEscalateInputToOrchestratorDefaultsOff(t *testing.T) {
 	}
 	if !(ProjectConfig{EscalateInputToOrchestrator: true}).WithDefaults().EscalateInputToOrchestrator {
 		t.Fatal("WithDefaults must preserve an explicit opt-in")
+	}
+}
+
+// TestProjectConfigEscalateApprovalsToOrchestratorDefaultsOff proves the
+// approval opt-in is off unless a project sets it explicitly, and stays
+// independent of the input opt-in: an unconfigured project's resolved config
+// must never route a tool approval anywhere.
+func TestProjectConfigEscalateApprovalsToOrchestratorDefaultsOff(t *testing.T) {
+	if (ProjectConfig{}).EscalateApprovalsToOrchestrator {
+		t.Fatal("zero-value ProjectConfig must not enable approval escalation")
+	}
+	if DefaultProjectConfig().EscalateApprovalsToOrchestrator {
+		t.Fatal("DefaultProjectConfig must not enable approval escalation")
+	}
+	if (ProjectConfig{}).WithDefaults().EscalateApprovalsToOrchestrator {
+		t.Fatal("WithDefaults must not turn on approval escalation for an unconfigured project")
+	}
+	if !(ProjectConfig{EscalateApprovalsToOrchestrator: true}).WithDefaults().EscalateApprovalsToOrchestrator {
+		t.Fatal("WithDefaults must preserve an explicit opt-in")
+	}
+	if (ProjectConfig{EscalateInputToOrchestrator: true}).EscalateApprovalsToOrchestrator {
+		t.Fatal("the input opt-in must not imply the approval opt-in")
 	}
 }
