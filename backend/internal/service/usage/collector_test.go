@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -55,6 +57,54 @@ func TestCollectorRegistersFinalizesAndReactivatesSource(t *testing.T) {
 		t.Fatalf("registered binding=%+v source=%+v wakes=%d", bindings[0], sources[0], wakes)
 	}
 
+}
+
+// TestCollectorRegistersSourceThroughWindowsJunctionRoot reproduces the
+// installed Windows usage-ingestion gap: ~/.claude/projects (or ~/.codex) can
+// be an NTFS junction to another volume (a common disk-space relocation), and
+// filepath.EvalSymlinks fails to walk any path below the junction boundary
+// even though ordinary file APIs open the same path without issue. Before the
+// resolveProviderPath fallback, validateSourcePath treated every transcript
+// under such a root as artifact_missing, so no usage_sources row — and
+// therefore no model_usage_events — was ever created for real sessions.
+func TestCollectorRegistersSourceThroughWindowsJunctionRoot(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("NTFS junctions are a Windows-specific reproduction of this bug")
+	}
+
+	targetRoot := filepath.Join(t.TempDir(), "claude-projects-target")
+	mustNoError(t, os.MkdirAll(targetRoot, 0o700))
+	transcriptPath := filepath.Join(targetRoot, "encoded-project", "native-claude-1.jsonl")
+	writeUsageFixture(t, transcriptPath, "{}\n")
+
+	junction := filepath.Join(t.TempDir(), "projects")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", junction, targetRoot).CombinedOutput(); err != nil {
+		t.Skipf("could not create NTFS junction fixture (%v): %s", err, out)
+	}
+	hookPath := filepath.Join(junction, "encoded-project", "native-claude-1.jsonl")
+
+	store := collectorTestStore(t)
+	session := collectorTestSession(t, store, domain.HarnessClaudeCode, "native-claude-1", false)
+	collector := NewCollector(store, SourceRoots{ClaudeProjects: junction}, nil)
+
+	err := collector.RecordHook(context.Background(), session.ID, HookSignal{
+		Harness:         domain.HarnessClaudeCode,
+		Event:           "session-start",
+		NativeSessionID: "native-claude-1",
+		TranscriptPath:  hookPath,
+	})
+	mustNoError(t, err)
+
+	bindings, err := store.ListUsageBindingsForSession(context.Background(), session.ID)
+	mustNoError(t, err)
+	if len(bindings) != 1 {
+		t.Fatalf("bindings=%+v", bindings)
+	}
+	sources, err := store.ListUsageSourcesForBinding(context.Background(), bindings[0].ID)
+	mustNoError(t, err)
+	if len(sources) != 1 || sources[0].State != domain.UsageSourceActive {
+		t.Fatalf("expected exactly one active usage source registered through the junction, got %+v", sources)
+	}
 }
 
 func TestCollectorPersistsOnlyCanonicalClaudeProviderHints(t *testing.T) {

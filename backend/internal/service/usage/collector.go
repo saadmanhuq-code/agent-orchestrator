@@ -1689,10 +1689,7 @@ func (c *Collector) validateSourcePath(ctx context.Context, harness domain.Agent
 	if !filepath.IsAbs(path) || strings.ToLower(filepath.Ext(path)) != ".jsonl" {
 		return "", "", 0, errors.New(domain.UsageErrorArtifactPathRejected)
 	}
-	resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
-	if err != nil {
-		return "", "", 0, errors.New(domain.UsageErrorArtifactMissing)
-	}
+	resolved := resolveProviderPath(filepath.Clean(path))
 	if err := ctx.Err(); err != nil {
 		return "", "", 0, err
 	}
@@ -1706,10 +1703,7 @@ func (c *Collector) validateSourcePath(ctx context.Context, harness domain.Agent
 		if root == "" {
 			continue
 		}
-		resolvedRoot, rootErr := filepath.EvalSymlinks(filepath.Clean(root))
-		if rootErr != nil {
-			continue
-		}
+		resolvedRoot := resolveProviderPath(filepath.Clean(root))
 		rel, relErr := filepath.Rel(resolvedRoot, resolved)
 		if relErr == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			allowed = true
@@ -1724,6 +1718,24 @@ func (c *Collector) validateSourcePath(ctx context.Context, harness domain.Agent
 		return "", "", 0, err
 	}
 	return resolved, identity, info.Size(), nil
+}
+
+// resolveProviderPath canonicalizes a provider-owned path for identity and
+// containment checks. filepath.EvalSymlinks can fail with "path not found"
+// while walking a path that descends through a Windows junction (for example
+// a ~/.claude or ~/.codex directory relocated onto another volume), even
+// though ordinary file APIs open the exact same path without issue. Falling
+// back first to the parent directory's resolution, then to the cleaned path
+// itself, keeps a real provider artifact from being rejected as missing
+// solely because Go's manual symlink walk cannot fully resolve it.
+func resolveProviderPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	if parent, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
+		return filepath.Join(parent, filepath.Base(path))
+	}
+	return path
 }
 
 func validateSourceAttribution(
@@ -1806,10 +1818,7 @@ func (c *Collector) validateSourceAttribution(
 	if kind != domain.UsageSourceKimiWire {
 		return nil
 	}
-	expectedRoot, err := filepath.EvalSymlinks(filepath.Join(c.roots.KimiHome, "sessions"))
-	if err != nil {
-		return errors.New(domain.UsageErrorArtifactPathRejected)
-	}
+	expectedRoot := resolveProviderPath(filepath.Join(c.roots.KimiHome, "sessions"))
 	actualSessionDir := filepath.Dir(filepath.Dir(filepath.Dir(resolved)))
 	rel, err := filepath.Rel(expectedRoot, actualSessionDir)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -1861,17 +1870,11 @@ func pathWithinRoot(ctx context.Context, path, root string) bool {
 	if strings.TrimSpace(path) == "" || strings.TrimSpace(root) == "" {
 		return false
 	}
-	resolvedPath, err := filepath.EvalSymlinks(filepath.Clean(path))
-	if err != nil {
-		return false
-	}
+	resolvedPath := resolveProviderPath(filepath.Clean(path))
 	if ctx.Err() != nil {
 		return false
 	}
-	resolvedRoot, err := filepath.EvalSymlinks(filepath.Clean(root))
-	if err != nil {
-		return false
-	}
+	resolvedRoot := resolveProviderPath(filepath.Clean(root))
 	rel, err := filepath.Rel(resolvedRoot, resolvedPath)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
