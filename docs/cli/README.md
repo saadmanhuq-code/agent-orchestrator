@@ -76,9 +76,13 @@ daemon), then the current working directory matched against registered project
 paths. If `AO_SESSION_ID` is set but the session cannot be fetched, pass
 `--project` explicitly.
 
-Agent switching is initially available only for worker sessions whose source
-and target harnesses are Claude Code or Codex. The main command
-accepts an idempotency key:
+Agent switching is available only for worker sessions. A TUI-mode session can
+switch between Claude Code and Codex. A Chat-mode session can also switch to or
+from Kimi, because Kimi's ACP server owns its own conversation ids, replays them
+with `session/load`, and takes AO's continuation through the project instruction
+file AO writes before launch. Kimi is refused in TUI mode: that path needs the
+target's first prompt delivered in argv, and Kimi delivers prompts after
+startup. The main command accepts an idempotency key:
 
 ```bash
 ao session switch-agent ao-7 codex \

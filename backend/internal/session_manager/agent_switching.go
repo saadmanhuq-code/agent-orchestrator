@@ -255,8 +255,9 @@ func (m *Manager) admitAgentSwitch(ctx context.Context, id domain.SessionID, cfg
 		(mode == domain.SessionModeTUI && rec.Metadata.RuntimeHandleID == "") {
 		return domain.AgentSwitch{}, nil, fmt.Errorf("switch agent %s: %w", id, ErrIncompleteHandle)
 	}
-	if !switchHarnessSupported(rec.Harness) || !switchHarnessSupported(cfg.TargetHarness) {
-		return domain.AgentSwitch{}, nil, fmt.Errorf("switch agent %s: %w: supported harnesses are claude-code and codex", id, ErrUnsupportedSwitchHarness)
+	if !switchHarnessSupported(rec.Harness, mode) || !switchHarnessSupported(cfg.TargetHarness, mode) {
+		return domain.AgentSwitch{}, nil, fmt.Errorf("switch agent %s: %w: supported harnesses in %s mode are %s",
+			id, ErrUnsupportedSwitchHarness, mode, switchSupportedHarnessList(mode))
 	}
 	if rec.Harness == cfg.TargetHarness {
 		return domain.AgentSwitch{}, nil, fmt.Errorf("switch agent %s: %w: %s", id, ErrAlreadyUsingHarness, cfg.TargetHarness)
@@ -1256,13 +1257,36 @@ func (m *Manager) resolveTargetActivationOutcome(
 	return current, false, sourceStillOwns, nil
 }
 
-func switchHarnessSupported(h domain.AgentHarness) bool {
+// switchHarnessSupported reports whether a harness can own either end of the
+// switch saga in the given session mode. The set is deliberately an allowlist
+// of harnesses whose continuation behavior has been verified end to end, not an
+// inference from the adapter interfaces an agent happens to implement.
+//
+// Kimi is Chat-only on purpose. Its ACP server assigns conversation ids,
+// replays them through session/load, and takes AO's continuation through the
+// project instruction file kimiacp writes before launch, which is everything
+// the Chat saga needs. The TUI saga additionally requires in-command prompt
+// delivery so the target's first turn can carry the handoff in argv; Kimi
+// delivers prompts after startup (see kimi.GetPromptDeliveryStrategy), so a TUI
+// switch is refused here instead of failing after the source is already stopped.
+func switchHarnessSupported(h domain.AgentHarness, mode domain.SessionMode) bool {
 	switch h {
 	case domain.HarnessClaudeCode, domain.HarnessCodex:
 		return true
+	case domain.HarnessKimi:
+		return domain.NormalizeSessionMode(mode) == domain.SessionModeChat
 	default:
 		return false
 	}
+}
+
+// switchSupportedHarnessList renders the allowlist for the mode a caller is
+// actually in, so the refusal names the harnesses that would have worked.
+func switchSupportedHarnessList(mode domain.SessionMode) string {
+	if domain.NormalizeSessionMode(mode) == domain.SessionModeChat {
+		return "claude-code, codex and kimi"
+	}
+	return "claude-code and codex"
 }
 
 func validateContinuationAgent(agent ports.Agent) (ports.ContinuationCapabilities, error) {
@@ -1472,7 +1496,7 @@ func appendAgentContinuationProtocol(systemPrompt string) string {
 // delivery acknowledgement did not. Older switches without a finalized
 // artifact used a visible provider turn and need no hidden replay.
 func (m *Manager) systemPromptForNativeRestore(ctx context.Context, rec domain.SessionRecord, base string) (string, error) {
-	if rec.Kind != domain.KindWorker || !switchHarnessSupported(rec.Harness) {
+	if rec.Kind != domain.KindWorker || !switchHarnessSupported(rec.Harness, rec.Mode) {
 		return base, nil
 	}
 	store, ok := m.store.(ports.AgentSwitchStore)

@@ -11927,10 +11927,12 @@ components:
           maxLength: 256
           type: string
         targetHarness:
-          description: Agent harness to continue the logical AO session with.
+          description: Agent harness to continue the logical AO session with. kimi
+            is accepted for Chat-mode sessions only.
           enum:
           - claude-code
           - codex
+          - kimi
           type: string
       required:
       - targetHarness

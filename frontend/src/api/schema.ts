@@ -4262,10 +4262,10 @@ export interface components {
             /** @description Optional model override for the target agent launch or resume. */
             model?: string;
             /**
-             * @description Agent harness to continue the logical AO session with.
+             * @description Agent harness to continue the logical AO session with. kimi is accepted for Chat-mode sessions only.
              * @enum {string}
              */
-            targetHarness: "claude-code" | "codex";
+            targetHarness: "claude-code" | "codex" | "kimi";
         };
         SystemRequirement: {
             /** @description Extra context: the resolved path when satisfied, or why it is not. */

@@ -911,13 +911,16 @@ func newSwitchTestManager(t *testing.T, runtime runtimeController) (*Manager, *s
 	}
 	source := &switchTestAgent{configDir: filepath.Join(root, "claude"), available: map[string]ports.NativeSessionAvailability{"source-native": ports.NativeSessionAvailabilityAvailable}}
 	target := &switchTestAgent{configDir: filepath.Join(root, "codex"), available: map[string]ports.NativeSessionAvailability{}}
+	// Kimi is registered so Chat-mode switches have a real third harness to
+	// route to. It is TUI-refused at admission, so no TUI test reaches it.
+	kimi := &switchTestAgent{configDir: filepath.Join(root, "kimi"), available: map[string]ports.NativeSessionAvailability{}}
 	messenger := &fakeMessenger{}
 	lcm := &fakeLCM{store: store.fakeStore}
 	store.agentSwitchStore = store
 	launches := []string{"target-generation", "source-rollback-generation", "source-recovery-generation"}
 	manager := New(Deps{
 		Runtime:   runtime,
-		Agents:    switchTestAgents{domain.HarnessClaudeCode: source, domain.HarnessCodex: target},
+		Agents:    switchTestAgents{domain.HarnessClaudeCode: source, domain.HarnessCodex: target, domain.HarnessKimi: kimi},
 		Workspace: switchTestWorkspace{fakeWorkspace: &fakeWorkspace{path: workspacePath}},
 		Store:     store, Messenger: messenger, Lifecycle: lcm, DataDir: filepath.Join(root, "ao"),
 		LookPath:   func(string) (string, error) { return "/bin/agent", nil },
@@ -2092,16 +2095,22 @@ func TestCollectOptionalAgentHandoffRechecksActiveTurnSafetyAtWriteBoundary(t *t
 	}
 }
 
-func TestSwitchAgentRejectsCursorAndKimiBeforeMutation(t *testing.T) {
+func TestSwitchAgentRejectsUnsupportedHarnessBeforeMutation(t *testing.T) {
 	tests := []struct {
 		name   string
+		mode   domain.SessionMode
 		source domain.AgentHarness
 		target domain.AgentHarness
 	}{
-		{name: "cursor target", source: domain.HarnessClaudeCode, target: domain.HarnessCursor},
-		{name: "kimi target", source: domain.HarnessClaudeCode, target: domain.HarnessKimi},
-		{name: "cursor source", source: domain.HarnessCursor, target: domain.HarnessCodex},
-		{name: "kimi source", source: domain.HarnessKimi, target: domain.HarnessCodex},
+		{name: "cursor target tui", mode: domain.SessionModeTUI, source: domain.HarnessClaudeCode, target: domain.HarnessCursor},
+		{name: "cursor source tui", mode: domain.SessionModeTUI, source: domain.HarnessCursor, target: domain.HarnessCodex},
+		{name: "cursor target chat", mode: domain.SessionModeChat, source: domain.HarnessClaudeCode, target: domain.HarnessCursor},
+		{name: "cursor source chat", mode: domain.SessionModeChat, source: domain.HarnessCursor, target: domain.HarnessCodex},
+		// Kimi has no in-command prompt delivery, so the TUI saga could not
+		// seed the target's first turn with the handoff. It is refused at
+		// admission rather than after the source has already been stopped.
+		{name: "kimi target tui", mode: domain.SessionModeTUI, source: domain.HarnessClaudeCode, target: domain.HarnessKimi},
+		{name: "kimi source tui", mode: domain.SessionModeTUI, source: domain.HarnessKimi, target: domain.HarnessCodex},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2109,6 +2118,14 @@ func TestSwitchAgentRejectsCursorAndKimiBeforeMutation(t *testing.T) {
 			manager, store, _ := newSwitchTestManager(t, runtime)
 			rec := store.sessions["proj-1"]
 			rec.Harness = tt.source
+			rec.Mode = tt.mode
+			if tt.mode == domain.SessionModeChat {
+				rec.Metadata.RuntimeHandleID = ""
+				rec.Metadata.RuntimeLaunchID = ""
+				rec.Metadata.ProviderConversationID = "source-chat-native"
+				rec.Metadata.ControllerGeneration = "source-chat-generation"
+				manager.chat = &recordingLauncher{}
+			}
 			store.sessions[rec.ID] = rec
 
 			_, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
@@ -2122,6 +2139,129 @@ func TestSwitchAgentRejectsCursorAndKimiBeforeMutation(t *testing.T) {
 			}
 			if got := store.sessions[rec.ID].Harness; got != tt.source {
 				t.Fatalf("source harness changed = %q, want %q", got, tt.source)
+			}
+		})
+	}
+}
+
+// TestSwitchAgentRefusalNamesTheHarnessListForTheSessionMode pins the refusal
+// text: a Chat user who asked for an unsupported harness must be told Kimi was
+// an option, and a TUI user must not be told that.
+func TestSwitchAgentRefusalNamesTheHarnessListForTheSessionMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		mode     domain.SessionMode
+		want     string
+		notWant  string
+		wantMode string
+	}{
+		{name: "tui", mode: domain.SessionModeTUI, want: "claude-code and codex", notWant: "kimi", wantMode: "tui"},
+		{name: "chat", mode: domain.SessionModeChat, want: "claude-code, codex and kimi", wantMode: "chat"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager, store, _ := newSwitchTestManager(t, &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}})
+			rec := store.sessions["proj-1"]
+			rec.Mode = tt.mode
+			if tt.mode == domain.SessionModeChat {
+				rec.Metadata.RuntimeHandleID = ""
+				rec.Metadata.RuntimeLaunchID = ""
+				rec.Metadata.ProviderConversationID = "source-chat-native"
+				rec.Metadata.ControllerGeneration = "source-chat-generation"
+				manager.chat = &recordingLauncher{}
+			}
+			store.sessions[rec.ID] = rec
+
+			_, _, err := manager.admitAgentSwitch(context.Background(), rec.ID, SwitchAgentConfig{
+				TargetHarness: domain.HarnessCursor, IdempotencyKey: "refusal-text",
+			})
+			if !errors.Is(err, ErrUnsupportedSwitchHarness) {
+				t.Fatalf("admitAgentSwitch error = %v, want ErrUnsupportedSwitchHarness", err)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("refusal %q does not name %q", err.Error(), tt.want)
+			}
+			if !strings.Contains(err.Error(), tt.wantMode+" mode") {
+				t.Fatalf("refusal %q does not name the session mode", err.Error())
+			}
+			if tt.notWant != "" && strings.Contains(err.Error(), tt.notWant) {
+				t.Fatalf("refusal %q offers %q, which this mode cannot switch to", err.Error(), tt.notWant)
+			}
+		})
+	}
+}
+
+// TestSwitchAgentChatSwitchesKimiInBothDirections is the behavior Kimi support
+// exists for: a live Chat worker keeps its AO session, workspace and branch
+// while its harness is replaced in either direction against both existing
+// harnesses. It fails on the pre-Kimi allowlist.
+func TestSwitchAgentChatSwitchesKimiInBothDirections(t *testing.T) {
+	tests := []struct {
+		name   string
+		source domain.AgentHarness
+		target domain.AgentHarness
+	}{
+		{name: "claude-code to kimi", source: domain.HarnessClaudeCode, target: domain.HarnessKimi},
+		{name: "kimi to claude-code", source: domain.HarnessKimi, target: domain.HarnessClaudeCode},
+		{name: "codex to kimi", source: domain.HarnessCodex, target: domain.HarnessKimi},
+		{name: "kimi to codex", source: domain.HarnessKimi, target: domain.HarnessCodex},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runtime := &fakeRestartRuntime{fakeRuntime: &fakeRuntime{}}
+			manager, store, _ := newSwitchTestManager(t, runtime)
+			rec := store.sessions["proj-1"]
+			rec.Harness = tt.source
+			rec.Mode = domain.SessionModeChat
+			rec.Activity = domain.Activity{State: domain.ActivityIdle, LastActivityAt: time.Now().UTC()}
+			rec.Metadata.RuntimeHandleID = ""
+			rec.Metadata.RuntimeLaunchID = ""
+			rec.Metadata.AgentSessionID = ""
+			rec.Metadata.ProviderConversationID = "source-chat-native"
+			rec.Metadata.ControllerGeneration = "source-chat-generation"
+			workspacePath := rec.Metadata.WorkspacePath
+			branch := rec.Metadata.Branch
+			store.sessions[rec.ID] = rec
+			launcher := &switchAgentChatLauncher{
+				recordingLauncher: &recordingLauncher{},
+				store:             store,
+				live:              true,
+			}
+			manager.chat = launcher
+
+			sw, err := switchAgentSynchronously(context.Background(), manager, rec.ID, SwitchAgentConfig{
+				TargetHarness: tt.target, IdempotencyKey: "kimi-chat-switch",
+			})
+			if err != nil {
+				t.Fatalf("SwitchAgent %s -> %s: %v", tt.source, tt.target, err)
+			}
+			if sw.State != domain.AgentSwitchCompleted {
+				t.Fatalf("switch state = %q, want completed", sw.State)
+			}
+			if sw.FromHarness != tt.source || sw.TargetHarness != tt.target {
+				t.Fatalf("switch harnesses = %q -> %q, want %q -> %q",
+					sw.FromHarness, sw.TargetHarness, tt.source, tt.target)
+			}
+			got := store.sessions[rec.ID]
+			if got.Harness != tt.target || got.Mode != domain.SessionModeChat {
+				t.Fatalf("session owner = harness %q mode %q, want %q/chat", got.Harness, got.Mode, tt.target)
+			}
+			if got.ID != rec.ID || got.Metadata.WorkspacePath != workspacePath || got.Metadata.Branch != branch {
+				t.Fatalf("switch moved the worker: id %q workspace %q branch %q",
+					got.ID, got.Metadata.WorkspacePath, got.Metadata.Branch)
+			}
+			if got.Metadata.RuntimeHandleID != "" || got.Metadata.RuntimeLaunchID != "" {
+				t.Fatalf("Chat target acquired runtime metadata: %+v", got.Metadata)
+			}
+			if runtime.created != 0 {
+				t.Fatalf("Chat switch created %d terminal runtimes, want 0", runtime.created)
+			}
+			if len(launcher.started) != 1 || launcher.started[0].Harness != tt.target {
+				t.Fatalf("target starts = %+v, want one %q controller", launcher.started, tt.target)
+			}
+			if !strings.Contains(launcher.started[0].SystemPrompt, "<ao-continuation") {
+				t.Fatalf("target %q started without the handoff continuation:\n%s",
+					tt.target, launcher.started[0].SystemPrompt)
 			}
 		})
 	}

@@ -137,6 +137,57 @@ func TestEveryProductionHarnessReportsModelOrModeConfig(t *testing.T) {
 	}
 }
 
+// TestSwitchCapableHarnessesDeclareContinuationCapabilities guards the adapter
+// half of `ao session switch-agent`. The saga refuses any harness whose adapter
+// cannot name its native state root or declare a verified fresh-conversation
+// identity mode, and it refuses it only after admission checks, so a silently
+// dropped interface would turn a switch into a late failure. Keep this list in
+// step with sessionmanager.switchHarnessSupported.
+func TestSwitchCapableHarnessesDeclareContinuationCapabilities(t *testing.T) {
+	for _, harness := range []domain.AgentHarness{
+		domain.HarnessClaudeCode, domain.HarnessCodex, domain.HarnessKimi,
+	} {
+		t.Run(string(harness), func(t *testing.T) {
+			reg, err := Build()
+			if err != nil {
+				t.Fatal(err)
+			}
+			adapter, ok := reg.Get(string(harness))
+			if !ok {
+				t.Fatalf("registry does not contain %q", harness)
+			}
+			agent, ok := adapter.(ports.Agent)
+			if !ok {
+				t.Fatalf("%q is not a ports.Agent", harness)
+			}
+			config, ok := agent.(ports.AgentNativeSessionConfigProvider)
+			if !ok {
+				t.Fatalf("%q does not implement ports.AgentNativeSessionConfigProvider", harness)
+			}
+			dir, err := config.NativeSessionConfigDir(context.Background(), map[string]string{"HOME": t.TempDir()})
+			if err != nil {
+				t.Fatalf("%q NativeSessionConfigDir: %v", harness, err)
+			}
+			if !filepath.IsAbs(dir) {
+				t.Fatalf("%q native config dir %q is not absolute", harness, dir)
+			}
+			provider, ok := agent.(ports.AgentContinuationCapabilityProvider)
+			if !ok {
+				t.Fatalf("%q does not implement ports.AgentContinuationCapabilityProvider", harness)
+			}
+			switch mode := provider.ContinuationCapabilities().FreshNativeSessionID; mode {
+			case ports.FreshNativeSessionIDProviderAssigned:
+			case ports.FreshNativeSessionIDCallerAssigned:
+				if _, ok := agent.(ports.AgentFreshNativeSessionIDProvider); !ok {
+					t.Fatalf("%q declares caller-assigned ids without an allocator", harness)
+				}
+			default:
+				t.Fatalf("%q fresh native session id mode = %q, want a verified mode", harness, mode)
+			}
+		})
+	}
+}
+
 // workspaceFiles returns every regular file under root, relative to root.
 func workspaceFiles(t *testing.T, root string) []string {
 	t.Helper()
