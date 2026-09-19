@@ -1707,14 +1707,14 @@ func safeNativeTranscriptPath(ctx context.Context, path, configDir string) strin
 		return ""
 	}
 	clean := filepath.Clean(path)
-	realConfigDir, err := filepath.EvalSymlinks(filepath.Clean(configDir))
+	realConfigDir, err := resolveProviderPath(filepath.Clean(configDir))
 	if err != nil {
 		return ""
 	}
 	if ctx.Err() != nil {
 		return ""
 	}
-	realPath, err := filepath.EvalSymlinks(clean)
+	realPath, err := resolveProviderPath(clean)
 	if err != nil {
 		return ""
 	}

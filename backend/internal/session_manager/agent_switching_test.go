@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -4955,5 +4957,172 @@ func TestSafeNativeTranscriptPathRejectsSymlinkEscape(t *testing.T) {
 	}
 	if got := safeNativeTranscriptPath(ctx, inside, configDir); got != wantInside {
 		t.Fatalf("contained transcript = %q, want %q", got, wantInside)
+	}
+}
+
+// TestSafeNativeTranscriptPathRejectsMissingOutsideAndInvalidPaths covers the
+// non-junction containment cases: a transcript that does not exist, a real
+// file that plainly lives outside configDir with no reparse point involved,
+// and structurally invalid inputs. All must fail closed with "".
+func TestSafeNativeTranscriptPathRejectsMissingOutsideAndInvalidPaths(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "provider")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(root, "outside.jsonl")
+	if err := os.WriteFile(outside, []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(configDir, "missing.jsonl")
+
+	tests := []struct {
+		name      string
+		path      string
+		configDir string
+	}{
+		{"missing file", missing, configDir},
+		{"plainly outside configDir", outside, configDir},
+		{"relative path", "relative.jsonl", configDir},
+		{"empty path", "", configDir},
+		{"empty configDir", filepath.Join(configDir, "x.jsonl"), ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := safeNativeTranscriptPath(ctx, tt.path, tt.configDir); got != "" {
+				t.Fatalf("safeNativeTranscriptPath(%q, %q) = %q, want rejection", tt.path, tt.configDir, got)
+			}
+		})
+	}
+}
+
+// TestSafeNativeTranscriptPathResolvesThroughWindowsJunction reproduces the
+// installed Windows handoff gap for a config dir that is itself relocated
+// onto another volume via an NTFS junction (for example CODEX_HOME, per the
+// sibling fix's commit message: "~/.claude/projects and ~/.codex were
+// relocated"). filepath.EvalSymlinks fails with "path not found" walking any
+// path below a junction boundary even though os.Stat/os.Open read the exact
+// same path fine; before resolveProviderPath, safeNativeTranscriptPath
+// rejected every transcript under such a configDir. Both configDir and path
+// cross the same junction here, so resolving them independently still lands
+// one inside the other -- see
+// TestSafeNativeTranscriptPathStillUnavailableWhenOnlyAChildIsRelocated for
+// the harder case where configDir itself does not move.
+func TestSafeNativeTranscriptPathResolvesThroughWindowsJunction(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("NTFS junctions are a Windows-specific reproduction of this bug")
+	}
+
+	root := t.TempDir()
+	relocatedTarget := filepath.Join(root, "relocated-config")
+	transcript := filepath.Join(relocatedTarget, "projects", "encoded-project", "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcript, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	configDir := filepath.Join(root, "provider")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", configDir, relocatedTarget).CombinedOutput(); err != nil {
+		t.Skipf("could not create NTFS junction fixture (%v): %s", err, out)
+	}
+
+	path := filepath.Join(configDir, "projects", "encoded-project", "session.jsonl")
+	want, err := resolveProviderPath(path)
+	if err != nil {
+		t.Fatalf("resolveProviderPath(%q): %v", path, err)
+	}
+	if got := safeNativeTranscriptPath(ctx, path, configDir); got != want {
+		t.Fatalf("safeNativeTranscriptPath through junction = %q, want %q", got, want)
+	}
+}
+
+// TestSafeNativeTranscriptPathStillUnavailableWhenOnlyAChildIsRelocated
+// documents a deliberate, currently-unresolved limitation found while fixing
+// the ao-native-5 handoff bug. On the controller install, ~/.claude itself is
+// an ordinary directory (confirmed via `fsutil reparsepoint query`) and only
+// its "projects" child is an NTFS junction to another volume. Once resolved
+// through native OS handles, a legitimately relocated child physically lands
+// outside configDir's own resolved form -- and a malicious junction planted
+// anywhere else directly under configDir (see
+// TestSafeNativeTranscriptPathRejectsJunctionEscapingConfigDir) resolves
+// exactly the same way. The two are structurally indistinguishable from
+// configDir and the candidate path alone, so accepting one would accept the
+// other: the sibling usage-collector fix avoids this by pointing its
+// allowed root directly at the relocatable directory
+// (SourceRoots.ClaudeProjects = filepath.Join(home, ".claude", "projects"),
+// see collector.go DefaultSourceRoots), which safeNativeTranscriptPath's
+// generic, harness-agnostic (path, configDir) signature has no equivalent
+// for today. Safely fixing this needs a harness-declared, externally-fixed
+// transcript root (for example a new optional adapter capability alongside
+// ports.AgentTranscriptLocator) -- out of this bounded fix's scope. This
+// test pins the current, safe, fail-closed behavior so a future change can't
+// silently widen containment to arbitrary redirected child junctions to make
+// it pass without that review.
+func TestSafeNativeTranscriptPathStillUnavailableWhenOnlyAChildIsRelocated(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("NTFS junctions are a Windows-specific reproduction of this bug")
+	}
+
+	root := t.TempDir()
+	configDir := filepath.Join(root, "provider")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	relocatedTarget := filepath.Join(root, "relocated-projects")
+	transcript := filepath.Join(relocatedTarget, "encoded-project", "session.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcript, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	junction := filepath.Join(configDir, "projects")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", junction, relocatedTarget).CombinedOutput(); err != nil {
+		t.Skipf("could not create NTFS junction fixture (%v): %s", err, out)
+	}
+
+	path := filepath.Join(junction, "encoded-project", "session.jsonl")
+	if got := safeNativeTranscriptPath(ctx, path, configDir); got != "" {
+		t.Fatalf("safeNativeTranscriptPath unexpectedly resolved a child-only relocation as %q; if this is now intentionally supported, it needs an externally-fixed transcript root, not containment derived from the candidate path itself", got)
+	}
+}
+
+// TestSafeNativeTranscriptPathRejectsJunctionEscapingConfigDir is the
+// negative counterpart: a junction planted inside configDir whose physical
+// target lies outside configDir must still be rejected, even though its
+// lexical path reads as contained. This guards against the lexical-fallback
+// weakness already rejected by source review for the sibling usage-collector
+// fix (see TestCollectorRejectsInRootJunctionEscapingAllowedRoot) — a
+// resolution failure or a physical escape must never be accepted by
+// spelling alone.
+func TestSafeNativeTranscriptPathRejectsJunctionEscapingConfigDir(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("NTFS junctions are a Windows-specific reproduction of this bug")
+	}
+
+	configDir := filepath.Join(t.TempDir(), "provider")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outsideTarget := filepath.Join(t.TempDir(), "outside-target")
+	if err := os.MkdirAll(outsideTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	transcript := filepath.Join(outsideTarget, "session.jsonl")
+	if err := os.WriteFile(transcript, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	junctionInConfigDir := filepath.Join(configDir, "escape-project")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", junctionInConfigDir, outsideTarget).CombinedOutput(); err != nil {
+		t.Skipf("could not create NTFS junction fixture (%v): %s", err, out)
+	}
+
+	path := filepath.Join(junctionInConfigDir, "session.jsonl")
+	if got := safeNativeTranscriptPath(ctx, path, configDir); got != "" {
+		t.Fatalf("junction escape accepted as %q", got)
 	}
 }
