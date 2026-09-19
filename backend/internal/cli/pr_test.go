@@ -8,19 +8,24 @@ import (
 )
 
 func TestPRMergePostsToDaemon(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "")
 	cfg := setConfigEnv(t)
 	srv, capture := reviewServer(t, http.StatusOK, `{"ok":true,"prNumber":42,"method":"squash"}`)
 	writeRunFileFor(t, cfg, srv)
 
-	out, errOut, err := executeCLI(t, aliveDeps(), "pr", "merge", "#42")
+	out, errOut, err := executeCLI(t, aliveDeps(), "pr", "merge", testMergePRURL, "--expected-head-sha", testMergeHeadOK)
 	if err != nil {
 		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
 	}
 	if capture.method != http.MethodPost || capture.path != "/api/v1/prs/42/merge" {
 		t.Fatalf("request = %s %s", capture.method, capture.path)
 	}
-	if strings.TrimSpace(capture.body) != "{}" {
-		t.Fatalf("body = %q, want {}", capture.body)
+	var req mergePRRequest
+	if err := json.Unmarshal([]byte(capture.body), &req); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if req.PRURL != testMergePRURL || req.ExpectedHeadSHA != testMergeHeadOK {
+		t.Fatalf("request = %+v", req)
 	}
 	if !strings.Contains(out, "merged PR #42 using squash") {
 		t.Fatalf("stdout = %q", out)
@@ -28,11 +33,12 @@ func TestPRMergePostsToDaemon(t *testing.T) {
 }
 
 func TestPRMergeOmitsMissingMethodFromOutput(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "")
 	cfg := setConfigEnv(t)
 	srv, _ := reviewServer(t, http.StatusOK, `{"ok":true,"prNumber":42}`)
 	writeRunFileFor(t, cfg, srv)
 
-	out, errOut, err := executeCLI(t, aliveDeps(), "pr", "merge", "42")
+	out, errOut, err := executeCLI(t, aliveDeps(), "pr", "merge", testMergePRURL, "--expected-head-sha", testMergeHeadOK)
 	if err != nil {
 		t.Fatalf("unexpected error: %v\nstderr=%s", err, errOut)
 	}
@@ -42,11 +48,12 @@ func TestPRMergeOmitsMissingMethodFromOutput(t *testing.T) {
 }
 
 func TestPRMergeRejectsInvalidNumber(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "")
 	setConfigEnv(t)
 
 	for _, number := range []string{"0", "-1", "abc", "#"} {
 		t.Run(number, func(t *testing.T) {
-			_, _, err := executeCLI(t, aliveDeps(), "pr", "merge", number)
+			_, _, err := executeCLI(t, aliveDeps(), "pr", "merge", number, "--expected-head-sha", testMergeHeadOK)
 			if got := ExitCode(err); got != 2 {
 				t.Fatalf("exit code = %d, want 2; err=%v", got, err)
 			}
@@ -69,11 +76,12 @@ func TestPRMergeRequiresExactlyOneArgument(t *testing.T) {
 }
 
 func TestPRMergeSurfacesDaemonError(t *testing.T) {
+	t.Setenv("AO_SESSION_ID", "")
 	cfg := setConfigEnv(t)
 	srv, _ := reviewServer(t, http.StatusConflict, `{"message":"PR is not mergeable","code":"PR_NOT_MERGEABLE","requestId":"req-1"}`)
 	writeRunFileFor(t, cfg, srv)
 
-	_, _, err := executeCLI(t, aliveDeps(), "pr", "merge", "42")
+	_, _, err := executeCLI(t, aliveDeps(), "pr", "merge", testMergePRURL, "--expected-head-sha", testMergeHeadOK)
 	if got := ExitCode(err); got != 1 {
 		t.Fatalf("exit code = %d, want 1; err=%v", got, err)
 	}
