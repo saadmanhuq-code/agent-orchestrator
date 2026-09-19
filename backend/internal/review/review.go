@@ -1350,8 +1350,11 @@ func (e *Engine) projectReviewerSelection(
 			cfg = proj.Config
 		}
 	}
-	if len(cfg.Reviewers) > 0 {
-		return cfg.Reviewers[0].Harness, cfg.Reviewers[0].AgentConfig, nil
+	// SelectReviewer, not Reviewers[0]: with several reviewers configured the
+	// first cross-family one wins, so a codex worker is not reviewed by codex
+	// while claude-code sits unused further down the list.
+	if reviewer, ok := cfg.SelectReviewer(worker.Harness); ok {
+		return reviewer.Harness, reviewer.AgentConfig, nil
 	}
 	return cfg.ResolveReviewerHarness(worker.Harness), domain.AgentConfig{}, nil
 }

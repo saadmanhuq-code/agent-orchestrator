@@ -95,13 +95,41 @@ type ReviewerConfig struct {
 // and the worker's harness is not itself a supported reviewer.
 const FallbackReviewerHarness = ReviewerClaudeCode
 
+// SelectReviewer picks which configured reviewer reviews this worker's PR, and
+// reports false when the project configures none.
+//
+// With more than one reviewer configured, the first one whose harness differs
+// from the worker's wins: a reviewer from the worker's own tool family shares
+// its blind spots, so it is the weakest of the configured options. List order
+// stays the preference order among the cross-family candidates.
+//
+// Nothing changes for a project with zero or one reviewer, or for one whose
+// every configured reviewer is the worker's own harness — that is an explicit
+// same-family choice and is honored. Turning review off entirely is still the
+// existing AutoReview / per-session toggle; this is only about which of the
+// reviewers the user already listed gets the job.
+func (c ProjectConfig) SelectReviewer(worker AgentHarness) (ReviewerConfig, bool) {
+	if len(c.Reviewers) == 0 {
+		return ReviewerConfig{}, false
+	}
+	if len(c.Reviewers) > 1 {
+		for _, reviewer := range c.Reviewers {
+			if string(reviewer.Harness) != string(worker) {
+				return reviewer, true
+			}
+		}
+	}
+	return c.Reviewers[0], true
+}
+
 // ResolveReviewerHarness picks the reviewer harness for a worker. A configured
-// reviewer wins. Otherwise only the original, unattended-safe reviewer set is
-// inherited from the worker. Every other reviewer requires explicit selection,
-// so adding an experimental adapter never silently changes an existing project.
+// reviewer wins (see SelectReviewer for which one). Otherwise only the
+// original, unattended-safe reviewer set is inherited from the worker. Every
+// other reviewer requires explicit selection, so adding an experimental adapter
+// never silently changes an existing project.
 func (c ProjectConfig) ResolveReviewerHarness(worker AgentHarness) ReviewerHarness {
-	if len(c.Reviewers) > 0 {
-		return c.Reviewers[0].Harness
+	if reviewer, ok := c.SelectReviewer(worker); ok {
+		return reviewer.Harness
 	}
 	switch worker {
 	case HarnessClaudeCode:
