@@ -648,6 +648,69 @@ func (f *fakeHostScopedProvider) AuthenticatedIdentityForHost(_ context.Context,
 	return ports.SCMIdentity{}, fmt.Errorf("no identity for host %q", host)
 }
 
+// fakePublishingProvider wraps fakeProvider and adds native review
+// publishing, simulating a GitLab/GitHub sub-provider that implements
+// ports.SCMReviewPublisher.
+type fakePublishingProvider struct {
+	*fakeProvider
+	got    ports.SCMReviewPublishRequest
+	result ports.SCMReviewPublishResult
+	err    error
+}
+
+func (f *fakePublishingProvider) PublishReview(_ context.Context, request ports.SCMReviewPublishRequest) (ports.SCMReviewPublishResult, error) {
+	f.got = request
+	return f.result, f.err
+}
+
+func TestPublishReview_RoutesToCorrectSubProvider(t *testing.T) {
+	gh := &fakePublishingProvider{fakeProvider: &fakeProvider{key: "github"}, result: ports.SCMReviewPublishResult{ExternalID: "gh-1"}}
+	gl := &fakePublishingProvider{fakeProvider: &fakeProvider{key: "gitlab"}, result: ports.SCMReviewPublishResult{ExternalID: "gl-1"}}
+	m := New(NamedProvider{Key: "github", Provider: gh}, NamedProvider{Key: "gitlab", Provider: gl})
+
+	req := ports.SCMReviewPublishRequest{PR: ports.SCMPRRef{Repo: ports.SCMRepo{Provider: "gitlab"}, Number: 7}, RunID: "run-1"}
+	result, err := m.PublishReview(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExternalID != "gl-1" {
+		t.Fatalf("ExternalID = %q, want gl-1 (routed to gitlab)", result.ExternalID)
+	}
+	if gl.got.RunID != "run-1" {
+		t.Fatalf("gitlab publisher did not receive the request: %+v", gl.got)
+	}
+	if gh.got.RunID != "" {
+		t.Fatalf("github publisher must not be called when the request routes to gitlab: %+v", gh.got)
+	}
+}
+
+func TestPublishReview_UnknownProviderReturnsError(t *testing.T) {
+	m := New(NamedProvider{Key: "github", Provider: &fakePublishingProvider{fakeProvider: &fakeProvider{key: "github"}}})
+
+	_, err := m.PublishReview(context.Background(), ports.SCMReviewPublishRequest{PR: ports.SCMPRRef{Repo: ports.SCMRepo{Provider: "bitbucket"}}})
+	if err == nil {
+		t.Fatal("expected error for unknown/mismatched provider")
+	}
+}
+
+func TestPublishReview_ProviderWithoutPublisherSupportReturnsUnsupported(t *testing.T) {
+	// A plain fakeProvider does not implement ports.SCMReviewPublisher.
+	m := New(NamedProvider{Key: "github", Provider: &fakeProvider{key: "github"}})
+
+	_, err := m.PublishReview(context.Background(), ports.SCMReviewPublishRequest{PR: ports.SCMPRRef{Repo: ports.SCMRepo{Provider: "github"}}})
+	if !errors.Is(err, ports.ErrSCMUnsupported) {
+		t.Fatalf("error = %v, want ErrSCMUnsupported", err)
+	}
+}
+
+func TestPublishReview_NilMultiProviderReturnsUnsupported(t *testing.T) {
+	var m *Provider
+	_, err := m.PublishReview(context.Background(), ports.SCMReviewPublishRequest{PR: ports.SCMPRRef{Repo: ports.SCMRepo{Provider: "github"}}})
+	if !errors.Is(err, ports.ErrSCMUnsupported) {
+		t.Fatalf("error = %v, want ErrSCMUnsupported", err)
+	}
+}
+
 // TestAuthenticatedIdentityForProvider_DelegatesHostToSubProvider verifies
 // that the multi provider passes the host parameter through to host-scoped
 // sub-providers (GitLab), so a self-managed host gets the correct identity

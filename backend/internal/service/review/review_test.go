@@ -274,6 +274,152 @@ func TestRequestRereviewRejectsUnknownReviewer(t *testing.T) {
 	}
 }
 
+type fakeReviewPublisher struct {
+	calls  int
+	got    ports.SCMReviewPublishRequest
+	result ports.SCMReviewPublishResult
+	err    error
+}
+
+func (f *fakeReviewPublisher) PublishReview(_ context.Context, request ports.SCMReviewPublishRequest) (ports.SCMReviewPublishResult, error) {
+	f.calls++
+	f.got = request
+	return f.result, f.err
+}
+
+func TestPublishReview_PublishesThenCompletesRun(t *testing.T) {
+	prURL := "https://gitlab.com/group/subgroup/proj/-/merge_requests/9"
+	st := &fakeStore{
+		ok:  true,
+		run: domain.ReviewRun{ID: "run-1", SessionID: "mer-1", PRURL: prURL, TargetSHA: "sha1", Status: domain.ReviewRunRunning},
+		prs: []domain.PullRequest{{URL: prURL, Number: 9, Provider: "gitlab", Host: "gitlab.com", Repo: "group/subgroup/proj"}},
+	}
+	pub := &fakeReviewPublisher{result: ports.SCMReviewPublishResult{ExternalID: "note-555"}}
+	svc := New(nil, st, WithReviewPublisher(pub))
+
+	run, err := svc.PublishReview(context.Background(), "mer-1", PublishRequest{
+		RunID:    "run-1",
+		Verdict:  domain.VerdictChangesRequested,
+		Body:     "please fix",
+		Comments: []PublishComment{{Path: "main.go", Line: 10, Body: "nit"}},
+	})
+	if err != nil {
+		t.Fatalf("PublishReview: %v", err)
+	}
+	if pub.calls != 1 {
+		t.Fatalf("publisher called %d times, want 1", pub.calls)
+	}
+	if pub.got.RunID != "run-1" || pub.got.ExpectedHeadSHA != "sha1" || pub.got.Verdict != domain.VerdictChangesRequested {
+		t.Fatalf("publisher request = %+v", pub.got)
+	}
+	// Nested GitLab namespace: owner must be the full "group/subgroup", not
+	// just "group" (the bug in the pre-existing reviewRequestRef helper).
+	if pub.got.PR.Repo.Owner != "group/subgroup" || pub.got.PR.Repo.Name != "proj" {
+		t.Fatalf("publisher PR ref = %+v, want nested-namespace owner/name split", pub.got.PR.Repo)
+	}
+	if len(pub.got.Comments) != 1 || pub.got.Comments[0].Path != "main.go" {
+		t.Fatalf("publisher comments = %+v", pub.got.Comments)
+	}
+	if run.Status != domain.ReviewRunComplete || run.GithubReviewID != "note-555" || run.Verdict != domain.VerdictChangesRequested {
+		t.Fatalf("run = %+v", run)
+	}
+}
+
+func TestPublishReview_MissingRunReturnsNotFound(t *testing.T) {
+	st := &fakeStore{}
+	svc := New(nil, st, WithReviewPublisher(&fakeReviewPublisher{}))
+
+	_, err := svc.PublishReview(context.Background(), "mer-1", PublishRequest{RunID: "run-1", Verdict: domain.VerdictApproved})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestPublishReview_UnrelatedPRReturnsNotFound(t *testing.T) {
+	st := &fakeStore{
+		ok:  true,
+		run: domain.ReviewRun{ID: "run-1", SessionID: "mer-1", PRURL: "https://gitlab.com/o/r/-/merge_requests/1", TargetSHA: "sha1", Status: domain.ReviewRunRunning},
+		prs: nil, // the run's PR is not tracked for this session
+	}
+	pub := &fakeReviewPublisher{}
+	svc := New(nil, st, WithReviewPublisher(pub))
+
+	_, err := svc.PublishReview(context.Background(), "mer-1", PublishRequest{RunID: "run-1", Verdict: domain.VerdictApproved})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("error = %v, want ErrNotFound", err)
+	}
+	if pub.calls != 0 {
+		t.Fatalf("publisher must not be called for an unrelated/untracked PR, got %d calls", pub.calls)
+	}
+}
+
+func TestPublishReview_WrongSessionReturnsInvalid(t *testing.T) {
+	st := &fakeStore{
+		ok:  true,
+		run: domain.ReviewRun{ID: "run-1", SessionID: "other-session", Status: domain.ReviewRunRunning},
+	}
+	svc := New(nil, st, WithReviewPublisher(&fakeReviewPublisher{}))
+
+	_, err := svc.PublishReview(context.Background(), "mer-1", PublishRequest{RunID: "run-1", Verdict: domain.VerdictApproved})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestPublishReview_RetryOnAlreadyCompletedRunSkipsPublisher(t *testing.T) {
+	st := &fakeStore{
+		ok: true,
+		run: domain.ReviewRun{
+			ID: "run-1", SessionID: "mer-1", PRURL: "pr1", TargetSHA: "sha1",
+			Status: domain.ReviewRunComplete, Verdict: domain.VerdictApproved, Body: "lgtm", GithubReviewID: "already-posted",
+		},
+	}
+	pub := &fakeReviewPublisher{result: ports.SCMReviewPublishResult{ExternalID: "would-be-a-duplicate"}}
+	svc := New(nil, st, WithReviewPublisher(pub))
+
+	run, err := svc.PublishReview(context.Background(), "mer-1", PublishRequest{RunID: "run-1", Verdict: domain.VerdictApproved, Body: "lgtm"})
+	if err != nil {
+		t.Fatalf("PublishReview: %v", err)
+	}
+	if pub.calls != 0 {
+		t.Fatalf("publisher must not be called again for an already-completed run (would duplicate the comment), got %d calls", pub.calls)
+	}
+	if run.GithubReviewID != "already-posted" {
+		t.Fatalf("GithubReviewID = %q, want the original id preserved", run.GithubReviewID)
+	}
+}
+
+func TestPublishReview_PropagatesHeadChangedWithoutCompletingRun(t *testing.T) {
+	st := &fakeStore{
+		ok:  true,
+		run: domain.ReviewRun{ID: "run-1", SessionID: "mer-1", PRURL: "pr1", TargetSHA: "sha1", Status: domain.ReviewRunRunning},
+		prs: []domain.PullRequest{{URL: "pr1", Number: 1, Provider: "gitlab", Host: "gitlab.com", Repo: "o/r"}},
+	}
+	pub := &fakeReviewPublisher{err: fmt.Errorf("%w: head moved", ports.ErrSCMHeadChanged)}
+	svc := New(nil, st, WithReviewPublisher(pub))
+
+	_, err := svc.PublishReview(context.Background(), "mer-1", PublishRequest{RunID: "run-1", Verdict: domain.VerdictApproved})
+	if !errors.Is(err, ports.ErrSCMHeadChanged) {
+		t.Fatalf("error = %v, want it to wrap ErrSCMHeadChanged", err)
+	}
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("error = %v, want it to also classify as ErrInvalid", err)
+	}
+	if st.updateCalls != 0 {
+		t.Fatalf("a failed publish must not complete the run, got %d update calls", st.updateCalls)
+	}
+}
+
+func TestPublishReview_UnavailablePublisherReturnsInvalid(t *testing.T) {
+	st := &fakeStore{ok: true, run: domain.ReviewRun{ID: "run-1", SessionID: "mer-1", Status: domain.ReviewRunRunning}}
+	svc := New(nil, st)
+
+	_, err := svc.PublishReview(context.Background(), "mer-1", PublishRequest{RunID: "run-1", Verdict: domain.VerdictApproved})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("error = %v, want ErrInvalid when no publisher is wired", err)
+	}
+}
+
 type fakeReducer struct {
 	outcome    lifecycle.ReviewDeliveryOutcome
 	err        error

@@ -86,6 +86,29 @@ type reviewSubmitOptions struct {
 	reviews  string
 }
 
+// publishReviewComment mirrors controllers.PublishReviewCommentInput.
+type publishReviewComment struct {
+	Path string `json:"path"`
+	Line int    `json:"line"`
+	Body string `json:"body"`
+}
+
+// publishReviewRequest mirrors controllers.PublishReviewInput.
+type publishReviewRequest struct {
+	RunID    string                 `json:"runId"`
+	Verdict  string                 `json:"verdict"`
+	Body     string                 `json:"body,omitempty"`
+	Comments []publishReviewComment `json:"comments,omitempty"`
+}
+
+type reviewPublishOptions struct {
+	session  string
+	runID    string
+	verdict  string
+	body     string
+	comments string
+}
+
 type reviewSessionOptions struct {
 	session string
 }
@@ -101,6 +124,7 @@ func newReviewCommand(ctx *commandContext) *cobra.Command {
 	}
 	cmd.AddCommand(newReviewListCommand(ctx))
 	cmd.AddCommand(newReviewSubmitCommand(ctx))
+	cmd.AddCommand(newReviewPublishCommand(ctx))
 	cmd.AddCommand(newReviewCancelCommand(ctx))
 	cmd.AddCommand(newReviewTriggerCommand(ctx))
 	return cmd
@@ -239,6 +263,93 @@ func (c *commandContext) submitReviewBatch(cmd *cobra.Command, session string, o
 		count = len(reviews)
 	}
 	_, err = fmt.Fprintf(cmd.OutOrStdout(), "recorded %d review(s) for %s\n", count, session)
+	return err
+}
+
+func newReviewPublishCommand(ctx *commandContext) *cobra.Command {
+	var opts reviewPublishOptions
+	cmd := &cobra.Command{
+		Use:   "publish [worker-session-id]",
+		Short: "Publish AO's review verdict to the pull request natively, then record it",
+		Args:  atMostOneArg,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return ctx.publishReview(cmd, args, opts)
+		},
+	}
+	// Reviewer agents routinely spell flags with underscores (--run_id) rather
+	// than hyphens (--run-id); normalize so both resolve to the same flag,
+	// matching `review submit`.
+	cmd.Flags().SetNormalizeFunc(func(_ *pflag.FlagSet, name string) pflag.NormalizedName {
+		return pflag.NormalizedName(strings.ReplaceAll(name, "_", "-"))
+	})
+	cmd.Flags().StringVar(&opts.session, "session", "", "Worker session id (or pass it as the positional argument)")
+	cmd.Flags().StringVar(&opts.runID, "run", "", "Review run id (required)")
+	cmd.Flags().StringVar(&opts.verdict, "verdict", "", "Review verdict: approved or changes_requested (required)")
+	cmd.Flags().StringVar(&opts.body, "body", "", "Review body: a path to a Markdown file, or - to read from stdin (so nothing is written into the worktree)")
+	cmd.Flags().StringVar(&opts.comments, "comments", "", `Optional JSON array of inline comments [{"path":...,"line":...,"body":...}]: a path, or - to read from stdin`)
+	return cmd
+}
+
+func (c *commandContext) publishReview(cmd *cobra.Command, args []string, opts reviewPublishOptions) error {
+	session := strings.TrimSpace(opts.session)
+	if len(args) == 1 {
+		session = strings.TrimSpace(args[0])
+	}
+	if session == "" {
+		return usageError{errors.New("usage: worker session id is required (positional or --session)")}
+	}
+	runID := strings.TrimSpace(opts.runID)
+	if runID == "" {
+		return usageError{errors.New("usage: --run is required")}
+	}
+	verdict := strings.TrimSpace(opts.verdict)
+	if verdict == "" {
+		return usageError{errors.New("usage: --verdict is required (approved or changes_requested)")}
+	}
+	var body string
+	if path := strings.TrimSpace(opts.body); path != "" {
+		var raw []byte
+		var err error
+		if path == "-" {
+			// Read from stdin so the reviewer never has to write a file into its
+			// checkout (where it could be committed onto the worker branch).
+			raw, err = io.ReadAll(cmd.InOrStdin())
+		} else {
+			raw, err = os.ReadFile(path)
+		}
+		if err != nil {
+			return usageError{fmt.Errorf("read review body: %w", err)}
+		}
+		body = string(raw)
+	}
+	var comments []publishReviewComment
+	if path := strings.TrimSpace(opts.comments); path != "" {
+		var raw []byte
+		var err error
+		if path == "-" {
+			raw, err = io.ReadAll(cmd.InOrStdin())
+		} else {
+			raw, err = os.ReadFile(path)
+		}
+		if err != nil {
+			return usageError{fmt.Errorf("read review comments: %w", err)}
+		}
+		if err := json.Unmarshal(raw, &comments); err != nil {
+			return usageError{fmt.Errorf("decode review comments JSON: %w", err)}
+		}
+	}
+	path := "sessions/" + url.PathEscape(session) + "/reviews/publish"
+	var res reviewRunResponse
+	if err := c.postJSON(cmd.Context(), path, publishReviewRequest{RunID: runID, Verdict: verdict, Body: body, Comments: comments}, &res); err != nil {
+		return err
+	}
+	// A publish response always carries the recorded run's ID and verdict, same
+	// contract as submit — a structurally valid but half-populated result is a
+	// broken contract, not a success to print.
+	if strings.TrimSpace(res.Review.ID) == "" || strings.TrimSpace(res.Review.Verdict) == "" {
+		return fmt.Errorf("daemon returned empty review result for %s", session)
+	}
+	_, err := fmt.Fprintf(cmd.OutOrStdout(), "published %s review for %s (external id %s)\n", res.Review.Verdict, session, res.Review.GithubReviewID)
 	return err
 }
 

@@ -226,6 +226,47 @@ func (c *Client) doMERGE(ctx context.Context, path string, q url.Values, body an
 	return RESTResponse{StatusCode: resp.StatusCode, Body: b}, nil
 }
 
+// doPOST performs a POST request with a JSON body. Like doMERGE it does not
+// participate in the ETag cache — mutating methods must not replay cached
+// responses.
+func (c *Client) doPOST(ctx context.Context, path string, body any) (RESTResponse, error) {
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return RESTResponse{}, fmt.Errorf("gitlab scm: encode %s body: %w", path, err)
+		}
+		rdr = bytes.NewReader(b)
+	}
+
+	u := c.restURL(path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, rdr)
+	if err != nil {
+		return RESTResponse{}, fmt.Errorf("gitlab scm: build %s request: %w", path, err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("User-Agent", c.userAgent)
+	if err := c.authorize(ctx, req); err != nil {
+		return RESTResponse{}, err
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return RESTResponse{}, fmt.Errorf("gitlab scm: POST %s: %w", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, err := readResponseBody(resp, path)
+	if err != nil {
+		return RESTResponse{StatusCode: resp.StatusCode}, err
+	}
+	if resp.StatusCode >= 400 {
+		return RESTResponse{StatusCode: resp.StatusCode, Body: b}, classifyError(resp, b)
+	}
+	return RESTResponse{StatusCode: resp.StatusCode, Body: b}, nil
+}
+
 // doGET performs a GET request using the client's internal ETag cache.
 func (c *Client) doGET(ctx context.Context, path string, q url.Values) (RESTResponse, error) {
 	u := c.restURL(path, q)

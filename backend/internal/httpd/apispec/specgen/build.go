@@ -1680,6 +1680,19 @@ func reviewOperations() []operation {
 				{http.StatusNotImplemented, envelope.APIError{}},
 			},
 		},
+		{
+			method: http.MethodPost, path: "/api/v1/sessions/{sessionId}/reviews/publish", id: "publishReview", tag: "reviews",
+			summary:    "Publish AO's review verdict to the pull request through AO's own SCM provider, then record it",
+			pathParams: []any{controllers.SessionIDParam{}},
+			reqBody:    controllers.PublishReviewInput{},
+			resps: []respUnit{
+				{http.StatusOK, controllers.ReviewRunResponse{}},
+				{http.StatusBadRequest, envelope.APIError{}},
+				{http.StatusUnprocessableEntity, envelope.APIError{}},
+				{http.StatusNotFound, envelope.APIError{}},
+				{http.StatusNotImplemented, envelope.APIError{}},
+			},
+		},
 	}
 }
 

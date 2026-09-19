@@ -309,6 +309,7 @@ func startSession(ctx context.Context, cfg config.Config, runtime runtimeselect.
 		reviewOpts = append(reviewOpts,
 			reviewsvc.WithReviewRequester(scmProvider),
 			reviewsvc.WithReviewResolver(scmProvider),
+			reviewsvc.WithReviewPublisher(scmProvider),
 		)
 	}
 	reviewSvc := reviewsvc.New(reviewEngine, store, reviewOpts...)
