@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -1904,4 +1905,67 @@ func exitCodeErr(t *testing.T, code int) error {
 		t.Fatalf("sh -c 'exit %d' should fail", code)
 	}
 	return err
+}
+
+// tmux hands one command to its server in a single imsg capped near 16 KiB and
+// answers "command too long" above it. Muse inlines AO's standing instructions
+// in argv, which lands on that edge, so a launch succeeded on one host and
+// failed on the next with the agent never starting.
+func TestLaunchCommandWithinBudgetKeepsShortCommandsInline(t *testing.T) {
+	cfg := ports.RuntimeConfig{
+		SessionID: "s1", WorkspacePath: "/w", Argv: []string{"agent", "--flag"},
+		Env: map[string]string{"AO_BRIDGE": "/b"},
+	}
+	got, err := launchCommandWithinBudget(cfg, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := buildLaunchCommand(cfg); got != want {
+		t.Fatalf("command = %q, want the inline command %q", got, want)
+	}
+}
+
+func TestLaunchCommandWithinBudgetMovesLongArgvOffTheCommandLine(t *testing.T) {
+	cfg := ports.RuntimeConfig{
+		SessionID: "s1", WorkspacePath: "/w",
+		Argv: []string{"env", "PROMPT=" + strings.Repeat("x", tmuxCommandBudget+1), "agent"},
+		Env:  map[string]string{"SECRET_LOOKING": "do-not-put-me-in-a-file"},
+	}
+	got, err := launchCommandWithinBudget(cfg, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) > tmuxCommandBudget {
+		t.Fatalf("command is %d bytes, want at most %d", len(got), tmuxCommandBudget)
+	}
+	if !strings.Contains(got, "export SECRET_LOOKING=") {
+		t.Fatalf("command = %q, want the environment to stay on the command line", got)
+	}
+	marker := ". '"
+	idx := strings.LastIndex(got, marker)
+	if idx < 0 {
+		t.Fatalf("command = %q, want it to source a launch script", got)
+	}
+	script := strings.TrimSuffix(got[idx+len(marker):], "'")
+	body, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatalf("read launch script: %v", err)
+	}
+	defer os.Remove(script)
+	if !strings.HasPrefix(string(body), "rm -f '"+script+"'\n") {
+		t.Fatalf("launch script does not unlink itself first:\n%s", body[:min(len(body), 200)])
+	}
+	if !strings.Contains(string(body), "PROMPT=") {
+		t.Fatal("launch script does not carry argv")
+	}
+	if strings.Contains(string(body), "do-not-put-me-in-a-file") {
+		t.Fatal("launch script carries the session environment; only argv may go to disk")
+	}
+	info, err := os.Stat(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if goruntime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("launch script mode = %v, want 0600", info.Mode().Perm())
+	}
 }

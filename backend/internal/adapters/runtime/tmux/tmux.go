@@ -354,7 +354,10 @@ func (r *Runtime) Create(ctx context.Context, cfg ports.RuntimeConfig) (ports.Ru
 		return ports.RuntimeHandle{}, tmuxCreateFailure(err)
 	}
 
-	launchCmd := buildLaunchCommand(cfg)
+	launchCmd, err := launchCommandWithinBudget(cfg, id)
+	if err != nil {
+		return ports.RuntimeHandle{}, tmuxCreateFailure(err)
+	}
 	args := newSessionArgs(id, cfg.WorkspacePath, r.shell, launchCmd)
 	if _, err := r.run(ctx, args...); err != nil {
 		return ports.RuntimeHandle{}, tmuxPossibleCreateFailure(
@@ -430,7 +433,10 @@ func (r *Runtime) Restart(ctx context.Context, handle ports.RuntimeHandle, cfg p
 		return ports.RuntimeHandle{}, err
 	}
 
-	launchCmd := buildLaunchCommand(cfg)
+	launchCmd, err := launchCommandWithinBudget(cfg, id)
+	if err != nil {
+		return ports.RuntimeHandle{}, err
+	}
 	if _, err := r.runForSession(ctx, id, respawnPaneArgs(id, cfg.WorkspacePath, r.shell, launchCmd)...); err != nil {
 		return ports.RuntimeHandle{}, fmt.Errorf("tmux runtime: restart session %s: %w", id, err)
 	}
@@ -1354,7 +1360,55 @@ func shellQuote(s string) string {
 //
 // PATH from cfg.Env is exported last, after all other keys, so an explicit
 // override takes effect.
+// tmuxCommandBudget is how much of tmux's control-message limit AO is willing
+// to fill with one launch command. A tmux client hands the server one command
+// in a single imsg capped near 16 KiB and answers "command too long" above it.
+// An agent that inlines a large system prompt in argv (Muse carries AO's
+// standing instructions in an env-prefixed argv word) lands right on that edge,
+// so the same launch succeeds on one host and fails on the next.
+const tmuxCommandBudget = 12000
+
 func buildLaunchCommand(cfg ports.RuntimeConfig) string {
+	return buildLaunchPrelude(cfg) + buildLaunchTail(cfg)
+}
+
+// launchCommandWithinBudget keeps what AO hands tmux under tmux's message
+// limit. The prelude — the working directory and the session environment —
+// always stays on the command line, because the environment is the only part
+// that could carry a credential. Only argv moves into a private one-shot
+// script, and argv is already visible to `ps`; the script is created 0600 and
+// unlinks itself on its first line, while the sourcing shell still holds the
+// descriptor, so nothing is left on disk while the agent runs.
+func launchCommandWithinBudget(cfg ports.RuntimeConfig, id string) (string, error) {
+	prelude := buildLaunchPrelude(cfg)
+	tail := buildLaunchTail(cfg)
+	if len(prelude)+len(tail) <= tmuxCommandBudget {
+		return prelude + tail, nil
+	}
+	script, err := writeLaunchScript(id, tail)
+	if err != nil {
+		return "", err
+	}
+	return prelude + ". " + shellQuote(script), nil
+}
+
+func writeLaunchScript(id, tail string) (string, error) {
+	file, err := os.CreateTemp("", "ao-launch-"+id+"-*.sh")
+	if err != nil {
+		return "", fmt.Errorf("tmux runtime: write launch script for %s: %w", id, err)
+	}
+	name := file.Name()
+	_, writeErr := file.WriteString("rm -f " + shellQuote(name) + "\n" + tail + "\n")
+	closeErr := file.Close()
+	if writeErr != nil || closeErr != nil {
+		_ = os.Remove(name)
+		return "", fmt.Errorf("tmux runtime: write launch script for %s: %w", id,
+			errors.Join(writeErr, closeErr))
+	}
+	return name, nil
+}
+
+func buildLaunchPrelude(cfg ports.RuntimeConfig) string {
 	path := cfg.Env["PATH"]
 	if path == "" {
 		path = getenv("PATH")
@@ -1390,6 +1444,11 @@ func buildLaunchCommand(cfg ports.RuntimeConfig) string {
 		b.WriteString(shellQuote(path))
 		b.WriteString("; ")
 	}
+	return b.String()
+}
+
+func buildLaunchTail(cfg ports.RuntimeConfig) string {
+	var b strings.Builder
 	// Quote each argv word so spaces inside a word are preserved.
 	parts := make([]string, len(cfg.Argv))
 	for i, a := range cfg.Argv {
