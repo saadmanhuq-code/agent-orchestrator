@@ -1689,7 +1689,7 @@ func (c *Collector) validateSourcePath(ctx context.Context, harness domain.Agent
 	if !filepath.IsAbs(path) || strings.ToLower(filepath.Ext(path)) != ".jsonl" {
 		return "", "", 0, errors.New(domain.UsageErrorArtifactPathRejected)
 	}
-	resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
+	resolved, err := resolveProviderPath(filepath.Clean(path))
 	if err != nil {
 		return "", "", 0, errors.New(domain.UsageErrorArtifactMissing)
 	}
@@ -1706,7 +1706,7 @@ func (c *Collector) validateSourcePath(ctx context.Context, harness domain.Agent
 		if root == "" {
 			continue
 		}
-		resolvedRoot, rootErr := filepath.EvalSymlinks(filepath.Clean(root))
+		resolvedRoot, rootErr := resolveProviderPath(filepath.Clean(root))
 		if rootErr != nil {
 			continue
 		}
@@ -1806,7 +1806,7 @@ func (c *Collector) validateSourceAttribution(
 	if kind != domain.UsageSourceKimiWire {
 		return nil
 	}
-	expectedRoot, err := filepath.EvalSymlinks(filepath.Join(c.roots.KimiHome, "sessions"))
+	expectedRoot, err := resolveProviderPath(filepath.Join(c.roots.KimiHome, "sessions"))
 	if err != nil {
 		return errors.New(domain.UsageErrorArtifactPathRejected)
 	}
@@ -1861,14 +1861,14 @@ func pathWithinRoot(ctx context.Context, path, root string) bool {
 	if strings.TrimSpace(path) == "" || strings.TrimSpace(root) == "" {
 		return false
 	}
-	resolvedPath, err := filepath.EvalSymlinks(filepath.Clean(path))
+	resolvedPath, err := resolveProviderPath(filepath.Clean(path))
 	if err != nil {
 		return false
 	}
 	if ctx.Err() != nil {
 		return false
 	}
-	resolvedRoot, err := filepath.EvalSymlinks(filepath.Clean(root))
+	resolvedRoot, err := resolveProviderPath(filepath.Clean(root))
 	if err != nil {
 		return false
 	}
