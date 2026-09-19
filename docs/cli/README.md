@@ -182,7 +182,8 @@ query values are redacted.
 PR actions are available through `ao pr merge` and
 `ao pr resolve-comments`. Review actions are available through `ao review ls`,
 `ao review trigger` (also `execute` and `restart`), `ao review cancel` (also
-`stop`), and `ao review submit`.
+`stop`), `ao review submit`, and `ao review publish` (native GitLab/GitHub
+publishing through AO's own SCM provider identity).
 
 ## Configuration
 
