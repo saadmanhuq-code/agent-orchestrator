@@ -157,12 +157,18 @@ Lists orchestrator sessions. Add `--json` for structured output.
 
 | Command | Purpose |
 | --- | --- |
-| `ao pr merge <pr-number>` | Request a merge through AO's GitHub action engine. |
+| `ao pr merge <pr-ref>` | Request a merge through AO's GitHub action engine. |
 | `ao pr resolve-comments <pr-number> [comment-id...]` | Resolve selected or eligible review comments. |
 | `ao review ls <worker-session-id>` | List review state for a worker. |
 | `ao review trigger [worker-session-id]` | Start or restart a reviewer run. Aliases: `execute`, `restart`. |
 | `ao review cancel [worker-session-id]` | Cancel a reviewer run. Alias: `stop`. |
 | `ao review submit [worker-session-id]` | Submit a reviewer verdict and results. |
+
+`ao pr merge` requires `--expected-head-sha`; the daemon refuses the merge if the PR's head has moved. A bare PR/MR number is accepted only when AO can resolve one identified project—pass `--project` to make that explicit, or use `AO_PROJECT_ID`, the session's project, or the current registered repo. A full PR/MR URL is unambiguous on its own and needs no project:
+
+```bash
+ao pr merge 123 --project <project-id> --expected-head-sha <40-character-commit-sha>
+```
 
 Use each subcommand's help for required review-run IDs, verdict values, and file/stdin inputs.
 
