@@ -10513,6 +10513,8 @@ components:
           additionalProperties:
             type: string
           type: object
+        escalateInputToOrchestrator:
+          type: boolean
         orchestrator:
           $ref: '#/components/schemas/RoleOverride'
         orchestratorRules:
