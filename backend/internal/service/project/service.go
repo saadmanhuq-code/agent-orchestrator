@@ -713,8 +713,10 @@ func (m *Service) EnsureDefaultScratchProject(ctx context.Context, scratchPath s
 	return m.projectFromRow(ctx, row), nil
 }
 
-// SetConfig replaces the project's stored config. The typed config is validated
-// here so a bad value is rejected when set rather than surfacing at spawn.
+// SetConfig replaces the project's stored config. For a single-repo project it
+// refreshes the origin from the registered checkout, so repository migrations do
+// not require replacing the project or its sessions. Origin and config are
+// validated together before the single durable write.
 func (m *Service) SetConfig(ctx context.Context, id domain.ProjectID, in SetConfigInput) (Project, error) {
 	if err := validateProjectID(id); err != nil {
 		return Project{}, err
@@ -732,6 +734,15 @@ func (m *Service) SetConfig(ctx context.Context, id domain.ProjectID, in SetConf
 	if row.Kind.WithDefault() == domain.ProjectKindScratch {
 		if err := validateScratchProjectConfig(in.Config); err != nil {
 			return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", err.Error(), nil)
+		}
+	}
+	if row.Kind.WithDefault() == domain.ProjectKindSingleRepo {
+		if origin := resolveGitOriginURL(row.Path); origin != "" {
+			row.RepoOriginURL = origin
+		} else if in.Config.CanonicalRepoURL != "" && in.Config.CanonicalRepoURL != row.Config.CanonicalRepoURL {
+			// An unavailable checkout must not authorize a new upstream using
+			// stale repository identity. Existing config remains editable.
+			return Project{}, apierr.Invalid("INVALID_PROJECT_CONFIG", "canonicalRepoURL: cannot verify the registered checkout origin", nil)
 		}
 	}
 	if err := in.Config.ValidateCanonicalRepository(row.RepoOriginURL); err != nil {

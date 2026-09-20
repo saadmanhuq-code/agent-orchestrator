@@ -2259,3 +2259,129 @@ func TestEmptyCloneOnboardingCreatesFirstWorkspace(t *testing.T) {
 		})
 	}
 }
+
+func TestManager_SetConfigRefreshesVerifiedOrigin(t *testing.T) {
+	const oldOrigin = "https://github.com/owner/repo.git"
+	const newOrigin = "https://gitlab.com/group/repo.git"
+	for _, tt := range []struct {
+		name         string
+		actualOrigin string
+		canonical    string
+		unavailable  bool
+		wantError    bool
+		wantOrigin   string
+	}{
+		{name: "migrate provider", actualOrigin: newOrigin, canonical: newOrigin, wantOrigin: newOrigin},
+		{name: "request without local migration", actualOrigin: oldOrigin, canonical: newOrigin, wantError: true},
+		{name: "foreign host", actualOrigin: "https://gitlab.example.com/group/repo.git", canonical: newOrigin, wantError: true},
+		{name: "old canonical conflicts with migrated checkout", actualOrigin: newOrigin, canonical: oldOrigin, wantError: true},
+		{name: "missing origin cannot authorize migration", canonical: newOrigin, wantError: true},
+		{name: "missing origin cannot authorize another upstream", canonical: "https://github.com/another/repo.git", wantError: true},
+		{name: "unavailable checkout cannot authorize migration", unavailable: true, canonical: newOrigin, wantError: true},
+		{name: "missing origin preserves existing config access", canonical: oldOrigin, wantOrigin: oldOrigin},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := sqlitetest.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			teardown := &fakeProjectTeardowner{}
+			m := project.NewWithDeps(project.Deps{Store: store, Sessions: teardown})
+			repo := gitRepoWithOrigin(t, oldOrigin)
+			cfg := domain.ProjectConfig{
+				CanonicalRepoURL: oldOrigin, DefaultBranch: "main", Env: map[string]string{"KEEP": "yes"},
+				AgentRules: "keep rules", AgentConfig: domain.AgentConfig{Model: "base", Permissions: domain.PermissionModeDefault},
+				Worker:       domain.RoleOverride{AgentConfig: domain.AgentConfig{Model: "worker", Permissions: domain.PermissionModeAcceptEdits}},
+				Orchestrator: domain.RoleOverride{AgentConfig: domain.AgentConfig{Model: "orchestrator", Permissions: domain.PermissionModeBypassPermissions}},
+			}
+			if _, err := m.Add(ctx, project.AddInput{Path: repo, ProjectID: ptr("ao"), Config: &cfg}); err != nil {
+				t.Fatal(err)
+			}
+			before, ok, err := store.GetProject(ctx, "ao")
+			if err != nil || !ok {
+				t.Fatalf("project before: %v %v", ok, err)
+			}
+			now := time.Now().UTC()
+			session, err := store.CreateSession(ctx, domain.SessionRecord{ProjectID: "ao", Kind: domain.KindWorker, CreatedAt: now, UpdatedAt: now, Metadata: domain.SessionMetadata{Branch: "keep-branch"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			historical := domain.PullRequest{
+				URL: "https://github.com/owner/repo/pull/1", SessionID: session.ID, Number: 1,
+				Provider: "github", Host: "github.com", Repo: "owner/repo", ProviderID: "github-pr-1",
+				Merged: true, SourceBranch: "historical", HeadSHA: "historic-head", UpdatedAt: now,
+			}
+			if err := store.WriteSCMObservation(ctx, historical, nil, nil, nil, nil, ports.ReviewWritePreserve); err != nil {
+				t.Fatal(err)
+			}
+			historicalBefore, ok, err := store.GetPR(ctx, historical.URL)
+			if err != nil || !ok {
+				t.Fatalf("historical PR before: %v %v", ok, err)
+			}
+			sessionBefore, ok, err := store.GetSession(ctx, session.ID)
+			if err != nil || !ok {
+				t.Fatalf("session before: %v %v", ok, err)
+			}
+			if tt.unavailable {
+				if err := os.Rename(repo, repo+"-offline"); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Rename(repo+"-offline", repo) })
+			} else {
+				args := []string{"-C", repo, "remote", "set-url", "origin", tt.actualOrigin}
+				if tt.actualOrigin == "" {
+					args = []string{"-C", repo, "remote", "remove", "origin"}
+				}
+				if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+					t.Fatalf("change local origin: %v %s", err, out)
+				}
+			}
+			cfg.CanonicalRepoURL = tt.canonical
+			_, err = m.SetConfig(ctx, "ao", project.SetConfigInput{Config: cfg})
+			if tt.wantError {
+				wantCode(t, err, "INVALID_PROJECT_CONFIG")
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			after, ok, err := store.GetProject(ctx, "ao")
+			if err != nil || !ok {
+				t.Fatalf("project after: %v %v", ok, err)
+			}
+			want := before
+			if !tt.wantError {
+				want.Config = cfg
+				want.RepoOriginURL = tt.wantOrigin
+			}
+			if !reflect.DeepEqual(after, want) {
+				t.Fatalf("project changed unexpectedly:\ngot %#v\nwant %#v", after, want)
+			}
+			sessionAfter, ok, err := store.GetSession(ctx, session.ID)
+			if err != nil || !ok || !reflect.DeepEqual(sessionAfter, sessionBefore) {
+				t.Fatalf("session changed: %#v %v", sessionAfter, err)
+			}
+			if len(teardown.projects) != 0 {
+				t.Fatal("origin refresh stopped sessions")
+			}
+			if !tt.wantError && tt.wantOrigin == newOrigin {
+				// Identical numbers on different providers must remain independent.
+				current := domain.PullRequest{
+					URL: "https://gitlab.com/group/repo/-/merge_requests/1", SessionID: session.ID, Number: 1,
+					Provider: "gitlab", Host: "gitlab.com", Repo: "group/repo", ProviderID: "gitlab-mr-1", UpdatedAt: now,
+				}
+				if err := store.WriteSCMObservation(ctx, current, nil, nil, nil, nil, ports.ReviewWritePreserve); err != nil {
+					t.Fatal(err)
+				}
+				prs, err := store.ListPRsBySession(ctx, session.ID)
+				if err != nil || len(prs) != 2 {
+					t.Fatalf("same-number cross-provider records: %d %v", len(prs), err)
+				}
+			}
+			historicalAfter, ok, err := store.GetPR(ctx, historical.URL)
+			if err != nil || !ok || !reflect.DeepEqual(historicalAfter, historicalBefore) {
+				t.Fatalf("historical GitHub PR relabeled or modified: %#v %v", historicalAfter, err)
+			}
+		})
+	}
+}
