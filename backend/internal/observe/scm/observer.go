@@ -1062,15 +1062,6 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 			if pr.Number <= 0 || pr.SourceBranch == "" {
 				continue
 			}
-			if identityKnown {
-				id, ok := identities[identityKey(repo.Provider, repo.Host)]
-				if !ok {
-					id, ok = identities[fallbackIdentityKey] // fallback single-identity
-				}
-				if ok && !strings.EqualFold(strings.TrimSpace(pr.Author), id.Login) {
-					continue
-				}
-			}
 			if _, ok := subjects[prKey(repo, pr.Number)]; ok {
 				continue
 			}
@@ -1098,6 +1089,20 @@ func (o *Observer) discoverNewPRs(ctx context.Context, sessionRepos []sessionRep
 			sr, ok := matchSession(eligible, pr.SourceBranch)
 			if !ok {
 				continue
+			}
+			// GitLab builders may use a different account from the observing
+			// daemon. An exact branch in the session's push repository still
+			// belongs to that session, including MRs already merged when first
+			// observed. Prefix-only attribution retains the author check.
+			exactGitLabBranch := repo.Provider == "gitlab" && sr.branch == pr.SourceBranch
+			if identityKnown && !exactGitLabBranch {
+				id, ok := identities[identityKey(repo.Provider, repo.Host)]
+				if !ok {
+					id, ok = identities[fallbackIdentityKey] // fallback single-identity
+				}
+				if ok && !strings.EqualFold(strings.TrimSpace(pr.Author), id.Login) {
+					continue
+				}
 			}
 			known := domain.PullRequest{
 				URL:          firstNonEmpty(pr.URL, pr.HTMLURL),

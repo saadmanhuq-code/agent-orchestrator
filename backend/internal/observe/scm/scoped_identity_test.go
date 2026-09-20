@@ -95,7 +95,8 @@ func testStoreWithTwoSessions() *fakeStore {
 // ScopedIdentityResolver is wired, MRs from gitlab.com and a self-managed
 // gitlab.internal host are checked against their own per-host identity.
 // A self-managed MR authored by a different account than gitlab.com must not
-// be silently dropped (ticket 06).
+// be silently dropped (ticket 06). Prefix-only branches exercise author filtering;
+// exact session branches have separate cross-builder ownership coverage below.
 func TestPoll_TwoGitLabHostsIdentityResolution(t *testing.T) {
 	store := testStoreWithTwoGitLabSessions()
 	provider := &hostAwareProvider{fakeProvider: &fakeProvider{
@@ -105,12 +106,12 @@ func TestPoll_TwoGitLabHostsIdentityResolution(t *testing.T) {
 		},
 		openPRs: map[string][]ports.SCMPRObservation{
 			prKey(glRepo, 0): {
-				{URL: "https://gitlab.com/o/r/-/merge_requests/1", Number: 1, SourceBranch: "feat", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha1", Author: "other"},
-				{URL: "https://gitlab.com/o/r/-/merge_requests/2", Number: 2, SourceBranch: "feat", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha2", Author: "comuser"},
+				{URL: "https://gitlab.com/o/r/-/merge_requests/1", Number: 1, SourceBranch: "feat/child", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha1", Author: "other"},
+				{URL: "https://gitlab.com/o/r/-/merge_requests/2", Number: 2, SourceBranch: "feat/child", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha2", Author: "comuser"},
 			},
 			prKey(glSelfRepo, 0): {
-				{URL: "https://gitlab.internal/o/r/-/merge_requests/3", Number: 3, SourceBranch: "feat", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha3", Author: "other"},
-				{URL: "https://gitlab.internal/o/r/-/merge_requests/4", Number: 4, SourceBranch: "feat", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha4", Author: "internaluser"},
+				{URL: "https://gitlab.internal/o/r/-/merge_requests/3", Number: 3, SourceBranch: "feat/child", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha3", Author: "other"},
+				{URL: "https://gitlab.internal/o/r/-/merge_requests/4", Number: 4, SourceBranch: "feat/child", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha4", Author: "internaluser"},
 			},
 		},
 		observations: map[string]ports.SCMObservation{
@@ -171,8 +172,8 @@ func TestPoll_PerProviderIdentityResolution(t *testing.T) {
 				{URL: "https://github.com/o/r/pull/2", Number: 2, SourceBranch: "feat", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha2", Author: "octocat"},
 			},
 			prKey(glRepo, 0): {
-				{URL: "https://gitlab.com/o/r/-/merge_requests/3", Number: 3, SourceBranch: "feat", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha3", Author: "other"},
-				{URL: "https://gitlab.com/o/r/-/merge_requests/4", Number: 4, SourceBranch: "feat", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha4", Author: "gitlabuser"},
+				{URL: "https://gitlab.com/o/r/-/merge_requests/3", Number: 3, SourceBranch: "feat/child", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha3", Author: "other"},
+				{URL: "https://gitlab.com/o/r/-/merge_requests/4", Number: 4, SourceBranch: "feat/child", HeadRepo: "o/r", TargetBranch: "main", HeadSHA: "sha4", Author: "gitlabuser"},
 			},
 		},
 		observations: map[string]ports.SCMObservation{
@@ -342,4 +343,77 @@ func fetchedNumbers(batches [][]ports.SCMPRRef) map[int]bool {
 		}
 	}
 	return m
+}
+
+// A builder identity can differ from the daemon identity. Exact branch ownership
+// in the session's GitLab repository is stronger attribution than author equality;
+// prefix-only, foreign-repository, and unmatched MRs still cannot bypass it.
+func TestPoll_GitLabExactBranchAcrossBuilderIdentities(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		branch   string
+		headRepo string
+		merged   bool
+		want     bool
+	}{
+		{name: "merged exact branch", branch: "feat", headRepo: "o/r", merged: true, want: true},
+		{name: "open exact branch", branch: "feat", headRepo: "o/r", want: true},
+		{name: "foreign author unmatched branch", branch: "unrelated", headRepo: "o/r", merged: true},
+		{name: "foreign author stacked prefix", branch: "feat/child", headRepo: "o/r", merged: true},
+		{name: "foreign fork exact branch", branch: "feat", headRepo: "stranger/r", merged: true},
+		{name: "missing head repository", branch: "feat", merged: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := testStoreWithTwoSessions()
+			observation := testObsGitLab(109)
+			observation.PR.SourceBranch = tt.branch
+			observation.PR.HeadRepo = tt.headRepo
+			observation.PR.Author = "builder"
+			observation.PR.Merged = tt.merged
+			provider := &hostAwareProvider{fakeProvider: &fakeProvider{
+				repoGuards:   map[string]ports.SCMGuardResult{prKey(glRepo, 0): {ETag: "v2"}},
+				openPRs:      map[string][]ports.SCMPRObservation{prKey(glRepo, 0): {observation.PR}},
+				observations: map[string]ports.SCMObservation{prKey(glRepo, 109): observation},
+			}}
+			scoped := &fakeScopedIdentityResolver{identities: map[string]ports.SCMIdentity{
+				identityKey("gitlab", "gitlab.com"): {Login: "daemon-user", Human: true},
+			}}
+			lifecycle := &fakeLifecycle{}
+			observer := New(provider, store, lifecycle, Config{
+				Clock: func() time.Time { return time.Unix(1, 0).UTC() },
+				Tick:  time.Hour, Logger: quietSlog(), CacheMax: 128,
+				ScopedIdentityResolver: scoped,
+			})
+			if err := observer.Poll(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if got := fetchedNumbers(provider.fetchBatches)[109]; got != tt.want {
+				t.Fatalf("MR fetched = %v, want %v", got, tt.want)
+			}
+			if !tt.want {
+				if len(store.writes) != 0 || len(lifecycle.observed) != 0 {
+					t.Fatalf("unowned MR was persisted or observed: writes=%d lifecycle=%d", len(store.writes), len(lifecycle.observed))
+				}
+				return
+			}
+			if len(store.writes) < 2 {
+				t.Fatalf("missing baseline or refreshed facts: %#v", store.writes)
+			}
+			for _, write := range store.writes {
+				if write.pr.SessionID != "gl-1" || write.pr.Provider != "gitlab" || write.pr.Host != "gitlab.com" || write.pr.Repo != "o/r" {
+					t.Fatalf("MR attributed outside its owning GitLab session: %#v", write.pr)
+				}
+			}
+			if store.writes[0].pr.Merged {
+				t.Fatal("baseline must precede terminal observation")
+			}
+			last := store.writes[len(store.writes)-1].pr
+			if last.Merged != tt.merged || last.SourceBranch != tt.branch {
+				t.Fatalf("refreshed MR facts = %#v", last)
+			}
+			if len(lifecycle.observed) != 1 {
+				t.Fatalf("lifecycle observations = %d, want 1", len(lifecycle.observed))
+			}
+		})
+	}
 }
