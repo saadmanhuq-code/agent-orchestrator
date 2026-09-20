@@ -88,3 +88,29 @@ func TestDetectTerminalActivityRejectsTranscriptText(t *testing.T) {
 		t.Fatalf("DetectTerminalActivity(transcript) = (%q, true), want no signal", got)
 	}
 }
+
+// Curated from the observed SALVI composer excerpt, not a full terminal capture.
+const pendingFollowup = `◆ Thinking (49s · esc to interrupt)
+──────────────────────────────────────────────────────────────────────────────
+❯ After the two current source reviews, review the new external native AO GitLab CI configuration.
+The newer Gate hash is also still in this composer.
+──────────────────────────────────────────────────────────────────────────────
+muse-spark-1.3-contributor · max · ~/.ao/data/worktrees/scratch/workers/scratch-1 · Launch overrides`
+
+func TestMuseDraftActivity(t *testing.T) {
+	for _, tt := range []struct {
+		name, output string
+		want         domain.ActivityState
+	}{
+		{"draft overrides retained thinking", pendingFollowup, domain.ActivityIdle},
+		{"submitted empty composer stays active", "◆ Thinking (49s · esc to interrupt)\n──────────────────────────────────────────────────────────────────────────────\n❯\n──────────────────────────────────────────────────────────────────────────────\nmuse-spark-1.3-contributor · max · workspace", domain.ActivityActive},
+		{"structured input stays waiting", readMuseFixture(t, "awaiting_user_input.txt"), domain.ActivityWaitingInput},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := (&Plugin{}).DetectTerminalActivity(tt.output)
+			if !ok || got != tt.want {
+				t.Fatalf("activity = (%q, %v), want %q", got, ok, tt.want)
+			}
+		})
+	}
+}
