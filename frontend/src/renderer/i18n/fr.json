@@ -1663,6 +1663,7 @@
 	"column.ready": "Prêt",
 	"column.archive": "Archives",
 	"displayStatus.working": "En cours",
+	"displayStatus.idle": "Inactif",
 	"displayStatus.blocked": "Bloqué",
 	"displayStatus.exited": "Terminé",
 	"displayStatus.noSignal": "Aucun signal",

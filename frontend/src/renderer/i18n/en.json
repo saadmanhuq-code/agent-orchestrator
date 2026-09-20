@@ -1797,6 +1797,7 @@
 	"column.ready": "Ready",
 	"column.archive": "Archive",
 	"displayStatus.working": "Working",
+	"displayStatus.idle": "Idle",
 	"displayStatus.blocked": "Blocked",
 	"displayStatus.exited": "Exited",
 	"displayStatus.noSignal": "No signal",

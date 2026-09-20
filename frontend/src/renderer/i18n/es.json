@@ -1663,6 +1663,7 @@
 	"column.ready": "Listo",
 	"column.archive": "Archivo",
 	"displayStatus.working": "Trabajando",
+	"displayStatus.idle": "Inactivo",
 	"displayStatus.blocked": "Bloqueado",
 	"displayStatus.exited": "Finalizado",
 	"displayStatus.noSignal": "Sin señal",

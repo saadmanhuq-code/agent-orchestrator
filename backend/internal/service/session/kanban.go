@@ -25,6 +25,7 @@ func deriveKanbanPresentation(
 func toContractKanbanSessionFacts(rec domain.SessionRecord, signalCapable bool) contract.KanbanSessionFacts {
 	return contract.KanbanSessionFacts{
 		SessionFacts:     toContractSessionFacts(rec, signalCapable),
+		IsOrchestrator:   rec.Kind == domain.KindOrchestrator,
 		AutoReview:       rec.AutoReviewEnabled,
 		AutoInjectReview: rec.AutoInjectReview,
 		AutoInjectCI:     rec.AutoInjectCI,
