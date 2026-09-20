@@ -3419,7 +3419,15 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 		observation, known := m.inspectMuseTerminal(ctx, before)
 		museWasIdle = known && observation.Work == ports.TerminalSurfaceWorkIdle && observation.Composer == ports.TerminalComposerEmpty
 	}
-	outcome, err := m.messenger.DeliverWithPostWrite(ctx, id, message, afterWrite)
+	wireMessage := message
+	if before.Harness == domain.HarnessMuse && message != "" {
+		// Muse's paste heuristic can consume the trailing Enter when literal
+		// terminal input has no paste boundary. Frame this one write using the
+		// terminal's bracketed-paste protocol; keep the stored prompt unframed.
+		// The runtime still submits exactly once and confirmation stays read-only.
+		wireMessage = "\x1b[200~" + message + "\x1b[201~"
+	}
+	outcome, err := m.messenger.DeliverWithPostWrite(ctx, id, wireMessage, afterWrite)
 	if err != nil {
 		return fmt.Errorf("send %s: %w", id, err)
 	}

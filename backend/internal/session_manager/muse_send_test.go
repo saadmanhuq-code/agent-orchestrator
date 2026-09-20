@@ -55,8 +55,31 @@ func TestSendMuseSubmissionEvidence(t *testing.T) {
 			if tt.wantErr && !errors.Is(err, ErrSendSubmissionUnconfirmed) {
 				t.Fatalf("Send error = %v, want typed submission uncertainty", err)
 			}
-			if len(msg.msgs) != 1 || msg.msgs[0] != "followup" {
-				t.Fatalf("writes = %#v, want only original message and no retries", msg.msgs)
+			if len(msg.msgs) != 1 || msg.msgs[0] != "\x1b[200~followup\x1b[201~" {
+				t.Fatalf("writes = %#v, want one bracketed paste and no retries", msg.msgs)
+			}
+		})
+	}
+}
+
+func TestSendMusePastePreservesMessage(t *testing.T) {
+	for _, message := range []string{"", "first line\nsecond line\nEnter", "বাংলা café"} {
+		t.Run(message, func(t *testing.T) {
+			st := newFakeStore()
+			st.sessions["s1"] = pastStartupGate(domain.SessionRecord{ID: "s1", Harness: domain.HarnessMuse, Activity: domain.Activity{State: domain.ActivityActive}, Metadata: domain.SessionMetadata{RuntimeHandleID: "s1"}})
+			msg := &fakeMessenger{}
+			m := newSendTestManager(t, muse.New(), msg, st)
+			// Unknown screen keeps the explicit uncertainty result and never retries.
+			m.runtime = &museOutputRuntime{}
+			if err := m.Send(context.Background(), "s1", message, nil); !errors.Is(err, ErrSendSubmissionUnconfirmed) {
+				t.Fatalf("Send error = %v, want explicit uncertainty", err)
+			}
+			want := message
+			if message != "" {
+				want = "\x1b[200~" + message + "\x1b[201~"
+			}
+			if len(msg.msgs) != 1 || msg.msgs[0] != want {
+				t.Fatalf("writes = %#v, want one exact framed message or unchanged empty nudge", msg.msgs)
 			}
 		})
 	}
