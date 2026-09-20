@@ -3150,6 +3150,7 @@ func TestToAPIErrorMapsWorkspaceBranchSentinels(t *testing.T) {
 		{"missing harness", fmt.Errorf("spawn: %w: configure project worker.agent or pass --harness", sessionmanager.ErrMissingHarness), apierr.KindInvalid, "AGENT_REQUIRED"},
 		{"harness install active", fmt.Errorf("spawn: %w", sessionmanager.ErrHarnessInstallActive), apierr.KindConflict, "HARNESS_INSTALL_ACTIVE"},
 		{"awaiting decision", fmt.Errorf("send mer-1: %w", sessionmanager.ErrAwaitingDecision), apierr.KindConflict, "SESSION_AWAITING_DECISION"},
+		{"submission unconfirmed", fmt.Errorf("send mer-1: %w", sessionmanager.ErrSendSubmissionUnconfirmed), apierr.KindConflict, "SESSION_SEND_SUBMISSION_UNCONFIRMED"},
 		{"startup pending", fmt.Errorf("send mer-1: %w", sessionmanager.ErrStartupPending), apierr.KindConflict, "SESSION_STARTUP_PENDING"},
 		{"agent exited", fmt.Errorf("send mer-1: %w", sessionmanager.ErrAgentExited), apierr.KindConflict, "AGENT_EXITED"},
 		{"agent not exited", fmt.Errorf("resume agent mer-1: %w", sessionmanager.ErrAgentNotExited), apierr.KindConflict, "AGENT_NOT_EXITED"},

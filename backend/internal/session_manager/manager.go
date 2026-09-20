@@ -39,6 +39,9 @@ var (
 	ErrAgentNotExited      = errors.New("session: agent has not exited")
 	ErrAgentExitInProgress = errors.New("session: agent exit is already in progress")
 	ErrIncompleteHandle    = errors.New("session: incomplete teardown handle")
+	// ErrSendSubmissionUnconfirmed does not mean that re-pasting is safe: the
+	// original message reached the terminal but acceptance could not be proved.
+	ErrSendSubmissionUnconfirmed = errors.New("session: message submission unconfirmed")
 	// ErrProjectNotResolvable means the spawn's project has no usable repo
 	// (unregistered, archived, or missing a path). The API maps it to a 400.
 	ErrProjectNotResolvable = errors.New("session: project repo not resolvable")
@@ -3346,8 +3349,9 @@ func (m *Manager) applyWorkspaceProjectPreserved(ctx context.Context, rows []por
 // multiline prompt a single Enter may not submit (claude-code leaves it as an
 // unsubmitted draft). confirmActive observes the durable Activity.State
 // (flipped to active by the user-prompt-submit hook) and re-sends Enter until
-// the session is active or the budget is exhausted. Confirmation never fails
-// the send: it only decides whether to nudge again.
+// the session is active or the budget is exhausted. Muse cannot safely nudge;
+// it instead returns an explicit unconfirmed result when terminal evidence
+// does not show an active turn with an empty composer.
 func (m *Manager) Send(ctx context.Context, id domain.SessionID, message string, attachment *ports.SpawnAttachment) error {
 	if m.codexAccountSwitchIsActive() {
 		if rec, ok, err := m.store.GetSession(ctx, id); err != nil {
@@ -3443,8 +3447,45 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 	if !ok {
 		return nil
 	}
+	if rec.Harness == domain.HarnessMuse {
+		return m.confirmMuseSubmission(ctx, rec)
+	}
 	if m.harnessNudgeSafe(rec.Harness) {
 		m.confirmActive(ctx, m.messenger, id)
+	}
+	return nil
+}
+
+// Muse cannot safely use confirmActive's Enter retries: its hook contract does
+// not clear permission pauses mid-turn. Wait the existing confirmation window,
+// then inspect the current screen without sending any further terminal input.
+func (m *Manager) confirmMuseSubmission(ctx context.Context, rec domain.SessionRecord) error {
+	unconfirmed := func() error {
+		return fmt.Errorf("send %s: %w; inspect the terminal before resending", rec.ID, ErrSendSubmissionUnconfirmed)
+	}
+	if m.agents == nil {
+		return unconfirmed()
+	}
+	agent, ok := m.agents.Agent(rec.Harness)
+	if !ok {
+		return unconfirmed()
+	}
+	inspector, ok := agent.(ports.TerminalSurfaceInspector)
+	reader, canRead := m.runtime.(ports.StyledTerminalOutputReader)
+	if !ok || !canRead {
+		return unconfirmed()
+	}
+	if err := sleepContext(ctx, m.sendConfirm.attemptDeadline); err != nil {
+		return fmt.Errorf("%w: %w", unconfirmed(), err)
+	}
+	output, err := reader.GetStyledOutput(ctx, runtimeHandle(rec.Metadata), 120)
+	if err != nil {
+		return unconfirmed()
+	}
+	observation := inspector.InspectTerminalSurface(output)
+	if observation.Composer != ports.TerminalComposerEmpty ||
+		observation.Work != ports.TerminalSurfaceWorkActive {
+		return unconfirmed()
 	}
 	return nil
 }
