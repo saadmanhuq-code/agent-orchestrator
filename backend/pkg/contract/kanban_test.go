@@ -661,3 +661,40 @@ func TestDeriveKanbanPresentationSpeaksForTheChosenPR(t *testing.T) {
 		}
 	})
 }
+
+func TestDeriveKanbanPresentationOrchestrator(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		activity   contract.ActivityState
+		terminated bool
+		want       contract.DisplayStatus
+	}{
+		{"idle supervisor does not owe a pr", contract.ActivityIdle, false, contract.DisplayIdle},
+		{"active supervisor is working", contract.ActivityActive, false, contract.DisplayWorking},
+		{"blocked supervisor stays blocked", contract.ActivityBlocked, false, contract.DisplayBlocked},
+		{"input request stays blocked", contract.ActivityWaitingInput, false, contract.DisplayBlocked},
+		{"exited supervisor stays exited", contract.ActivityExited, false, contract.DisplayExited},
+		{"termination outranks idle", contract.ActivityIdle, true, contract.DisplayTerminated},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			session := sessionAt(tc.activity)
+			session.IsOrchestrator = true
+			session.IsTerminated = tc.terminated
+			got := contract.DeriveKanbanPresentation(session, nil, time.Unix(3600, 0), testGrace)
+			if got.DisplayStatus != tc.want {
+				t.Fatalf("display status = %q, want %q", got.DisplayStatus, tc.want)
+			}
+		})
+	}
+	t.Run("lost signal is not reported as idle", func(t *testing.T) {
+		session := sessionAt(contract.ActivityIdle)
+		session.IsOrchestrator = true
+		session.SignalExpected = true
+		session.LastActivityAt = time.Unix(0, 0)
+		got := contract.DeriveKanbanPresentation(session, nil, time.Unix(3600, 0), testGrace)
+		if got.DisplayStatus != contract.DisplayNoSignal {
+			t.Fatalf("display status = %q, want No signal", got.DisplayStatus)
+		}
+	})
+}

@@ -1637,6 +1637,7 @@
 	"column.ready": "준비 완료",
 	"column.archive": "보관",
 	"displayStatus.working": "작업 중",
+	"displayStatus.idle": "유휴",
 	"displayStatus.blocked": "차단됨",
 	"displayStatus.exited": "종료됨",
 	"displayStatus.noSignal": "신호 없음",

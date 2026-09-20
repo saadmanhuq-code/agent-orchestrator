@@ -36,6 +36,8 @@ const (
 // has to report.
 type KanbanSessionFacts struct {
 	SessionFacts
+	// Orchestrators supervise work; an idle one does not owe a PR.
+	IsOrchestrator   bool
 	AutoReview       bool
 	AutoInjectReview bool
 	AutoInjectCI     bool
@@ -188,6 +190,7 @@ type DisplayStatus string
 const (
 	// Building.
 	DisplayWorking    DisplayStatus = "Working"
+	DisplayIdle       DisplayStatus = "Idle"
 	DisplayBlocked    DisplayStatus = "Blocked"
 	DisplayExited     DisplayStatus = "Exited"
 	DisplayNoSignal   DisplayStatus = "No signal"
@@ -296,6 +299,8 @@ func buildingDisplayStatus(session KanbanSessionFacts, now time.Time, noSignalGr
 		return DisplayExited
 	case silentPastGrace(session.SessionFacts, now, noSignalGrace):
 		return DisplayNoSignal
+	case session.IsOrchestrator && session.Activity == ActivityIdle:
+		return DisplayIdle
 	default:
 		return DisplayAwaitingPR
 	}

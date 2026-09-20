@@ -1649,6 +1649,7 @@
 	"column.ready": "就绪",
 	"column.archive": "归档",
 	"displayStatus.working": "工作中",
+	"displayStatus.idle": "空闲",
 	"displayStatus.blocked": "已阻塞",
 	"displayStatus.exited": "已退出",
 	"displayStatus.noSignal": "无信号",

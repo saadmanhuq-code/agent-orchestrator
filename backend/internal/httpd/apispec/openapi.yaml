@@ -8402,6 +8402,7 @@ components:
         displayStatus:
           enum:
           - Working
+          - Idle
           - Blocked
           - Exited
           - No signal

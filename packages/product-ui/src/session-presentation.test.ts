@@ -14,6 +14,11 @@ import {
 import { DISPLAY_STATUSES } from "./session-models";
 
 describe("session presentation", () => {
+	it("renders the native idle orchestrator phrase without awaiting a PR", () => {
+		expect(DISPLAY_STATUSES).toContain("Idle");
+		expect(getDisplayStatusLabel("Idle")).toBe("Idle");
+		expect(getDisplayStatusLabel("Idle", (key) => `translated:${key}`)).toBe("translated:displayStatus.idle");
+	});
 	it.each([
 		["active", "Working", true, "bg-status-working animate-status-pulse"],
 		["idle", "Idle", false, "bg-status-idle"],

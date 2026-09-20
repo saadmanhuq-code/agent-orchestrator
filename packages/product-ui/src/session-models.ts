@@ -55,6 +55,7 @@ export function isKanbanColumn(value: string): value is KanbanColumn {
 
 export const DISPLAY_STATUSES = [
 	"Working",
+	"Idle",
 	"Blocked",
 	"Exited",
 	"No signal",

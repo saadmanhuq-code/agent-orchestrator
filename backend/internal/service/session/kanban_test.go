@@ -113,6 +113,22 @@ func TestSessionListDerivesDisplayStatus(t *testing.T) {
 		want   domain.DisplayStatus
 	}{
 		{
+			name: "idle orchestrator is idle without a pr",
+			record: domain.SessionRecord{
+				ID: "mer-1", ProjectID: "mer", Kind: domain.KindOrchestrator,
+				Activity: domain.Activity{State: domain.ActivityIdle},
+			},
+			want: "Idle",
+		},
+		{
+			name: "idle worker still awaits a pr",
+			record: domain.SessionRecord{
+				ID: "mer-1", ProjectID: "mer", Kind: domain.KindWorker,
+				Activity: domain.Activity{State: domain.ActivityIdle},
+			},
+			want: contract.DisplayAwaitingPR,
+		},
+		{
 			name: "a working session with no pr reports the worker",
 			record: domain.SessionRecord{
 				ID: "mer-1", ProjectID: "mer",

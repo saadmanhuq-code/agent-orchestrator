@@ -65,6 +65,7 @@ const englishLabels: Record<SessionPresentationMessageKey, string> = {
 	"timeline.ci_failed": "CI Failed",
 	"timeline.changes_requested": "Changes Requested",
 	"displayStatus.working": "Working",
+	"displayStatus.idle": "Idle",
 	"displayStatus.blocked": "Blocked",
 	"displayStatus.exited": "Exited",
 	"displayStatus.noSignal": "No signal",
@@ -94,6 +95,7 @@ const englishLabels: Record<SessionPresentationMessageKey, string> = {
  */
 export const displayStatusLabelKeys: Record<DisplayStatus, `displayStatus.${string}`> = {
 	Working: "displayStatus.working",
+	Idle: "displayStatus.idle",
 	Blocked: "displayStatus.blocked",
 	Exited: "displayStatus.exited",
 	"No signal": "displayStatus.noSignal",
