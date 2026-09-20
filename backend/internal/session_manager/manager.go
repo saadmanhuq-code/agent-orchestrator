@@ -3411,6 +3411,14 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 			}
 		}
 	}
+	// Existing activity cannot acknowledge this message. Take the native screen
+	// observation before any terminal write; unknown and non-idle starts remain
+	// explicitly unconfirmed even if the later screen looks active and empty.
+	museWasIdle := false
+	if before, found, readErr := m.store.GetSession(ctx, id); readErr == nil && found && before.Harness == domain.HarnessMuse {
+		observation, known := m.inspectMuseTerminal(ctx, before)
+		museWasIdle = known && observation.Work == ports.TerminalSurfaceWorkIdle && observation.Composer == ports.TerminalComposerEmpty
+	}
 	outcome, err := m.messenger.DeliverWithPostWrite(ctx, id, message, afterWrite)
 	if err != nil {
 		return fmt.Errorf("send %s: %w", id, err)
@@ -3448,7 +3456,7 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 		return nil
 	}
 	if rec.Harness == domain.HarnessMuse {
-		return m.confirmMuseSubmission(ctx, rec)
+		return m.confirmMuseSubmission(ctx, rec, museWasIdle)
 	}
 	if m.harnessNudgeSafe(rec.Harness) {
 		m.confirmActive(ctx, m.messenger, id)
@@ -3459,35 +3467,43 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 // Muse cannot safely use confirmActive's Enter retries: its hook contract does
 // not clear permission pauses mid-turn. Wait the existing confirmation window,
 // then inspect the current screen without sending any further terminal input.
-func (m *Manager) confirmMuseSubmission(ctx context.Context, rec domain.SessionRecord) error {
+func (m *Manager) confirmMuseSubmission(ctx context.Context, rec domain.SessionRecord, wasIdle bool) error {
 	unconfirmed := func() error {
 		return fmt.Errorf("send %s: %w; inspect the terminal before resending", rec.ID, ErrSendSubmissionUnconfirmed)
 	}
-	if m.agents == nil {
-		return unconfirmed()
-	}
-	agent, ok := m.agents.Agent(rec.Harness)
-	if !ok {
-		return unconfirmed()
-	}
-	inspector, ok := agent.(ports.TerminalSurfaceInspector)
-	reader, canRead := m.runtime.(ports.StyledTerminalOutputReader)
-	if !ok || !canRead {
+	if !wasIdle {
 		return unconfirmed()
 	}
 	if err := sleepContext(ctx, m.sendConfirm.attemptDeadline); err != nil {
 		return fmt.Errorf("%w: %w", unconfirmed(), err)
 	}
-	output, err := reader.GetStyledOutput(ctx, runtimeHandle(rec.Metadata), 120)
-	if err != nil {
-		return unconfirmed()
-	}
-	observation := inspector.InspectTerminalSurface(output)
-	if observation.Composer != ports.TerminalComposerEmpty ||
+	observation, known := m.inspectMuseTerminal(ctx, rec)
+	if !known || observation.Composer != ports.TerminalComposerEmpty ||
 		observation.Work != ports.TerminalSurfaceWorkActive {
 		return unconfirmed()
 	}
+	// This is an observed idle-to-active transition, not a durable message ACK.
 	return nil
+}
+
+func (m *Manager) inspectMuseTerminal(ctx context.Context, rec domain.SessionRecord) (ports.TerminalSurfaceObservation, bool) {
+	if m.agents == nil {
+		return ports.TerminalSurfaceObservation{}, false
+	}
+	agent, ok := m.agents.Agent(rec.Harness)
+	if !ok {
+		return ports.TerminalSurfaceObservation{}, false
+	}
+	inspector, ok := agent.(ports.TerminalSurfaceInspector)
+	reader, canRead := m.runtime.(ports.StyledTerminalOutputReader)
+	if !ok || !canRead {
+		return ports.TerminalSurfaceObservation{}, false
+	}
+	output, err := reader.GetStyledOutput(ctx, runtimeHandle(rec.Metadata), 120)
+	if err != nil {
+		return ports.TerminalSurfaceObservation{}, false
+	}
+	return inspector.InspectTerminalSurface(output), true
 }
 
 func (m *Manager) prepareOutboundMessage(ctx context.Context, id domain.SessionID, message string) (string, error) {
