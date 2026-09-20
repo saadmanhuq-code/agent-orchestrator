@@ -592,14 +592,8 @@ func (c *conversation) finishPrompt(
 	}
 	c.mu.Lock()
 	c.terminalEventID = eventID
-	c.mu.Unlock()
-	c.emit(ports.ChatEvent{
-		Kind: ports.ChatEventTurnCompleted, ProviderEventID: eventID,
-		ProviderTurnID: turnID, TurnState: state,
-	})
-	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
-
-	c.mu.Lock()
+	// A consumer may submit its next turn as soon as it observes completion.
+	// Release this turn before publishing that event, not after the ready event.
 	if c.activeTurn == turnID {
 		c.activeTurn = ""
 		c.settlingTurn = ""
@@ -610,6 +604,11 @@ func (c *conversation) finishPrompt(
 		}
 	}
 	c.mu.Unlock()
+	c.emit(ports.ChatEvent{
+		Kind: ports.ChatEventTurnCompleted, ProviderEventID: eventID,
+		ProviderTurnID: turnID, TurnState: state,
+	})
+	c.emit(ports.ChatEvent{Kind: ports.ChatEventControllerState, ControllerState: ports.ChatControllerReady})
 }
 
 func turnState(reason acpsdk.StopReason) domain.TurnState {

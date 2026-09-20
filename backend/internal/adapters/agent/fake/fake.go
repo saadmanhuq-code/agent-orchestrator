@@ -87,7 +87,7 @@ func (p *Plugin) Manifest() adapters.Manifest {
 	}
 }
 
-// GetLaunchCommand returns `sh -lc <script>`, where the script walks the fixed
+// GetLaunchCommand returns `sh -c <script>`, where the script walks the fixed
 // activity timeline. cfg is intentionally ignored except that it is honored via
 // ctx cancellation: the fake never consults the prompt, permissions, or
 // workspace, so its behavior is fully deterministic.
@@ -103,7 +103,8 @@ func (p *Plugin) GetLaunchCommand(ctx context.Context, _ ports.LaunchConfig) (cm
 	if err != nil {
 		return nil, err
 	}
-	return []string{sh, "-lc", timelineScript(phaseSleep())}, nil
+	// A login shell can overwrite the daemon's PATH and lose its pinned ao hook.
+	return []string{sh, "-c", timelineScript(phaseSleep())}, nil
 }
 
 // AuthStatus reports authorized ONLY when AO_FAKE_HARNESS is set to a truthy
