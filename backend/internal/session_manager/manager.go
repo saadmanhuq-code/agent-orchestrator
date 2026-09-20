@@ -3396,7 +3396,7 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 		return err
 	}
 
-	message, err := m.prepareOutboundMessage(ctx, id, message)
+	message, before, err := m.prepareOutboundMessage(ctx, id, message)
 	if err != nil {
 		return err
 	}
@@ -3415,7 +3415,7 @@ func (m *Manager) send(ctx context.Context, id domain.SessionID, message, client
 	// observation before any terminal write; unknown and non-idle starts remain
 	// explicitly unconfirmed even if the later screen looks active and empty.
 	museWasIdle := false
-	if before, found, readErr := m.store.GetSession(ctx, id); readErr == nil && found && before.Harness == domain.HarnessMuse {
+	if before.Harness == domain.HarnessMuse {
 		observation, known := m.inspectMuseTerminal(ctx, before)
 		museWasIdle = known && observation.Work == ports.TerminalSurfaceWorkIdle && observation.Composer == ports.TerminalComposerEmpty
 	}
@@ -3506,18 +3506,18 @@ func (m *Manager) inspectMuseTerminal(ctx context.Context, rec domain.SessionRec
 	return inspector.InspectTerminalSurface(output), true
 }
 
-func (m *Manager) prepareOutboundMessage(ctx context.Context, id domain.SessionID, message string) (string, error) {
+func (m *Manager) prepareOutboundMessage(ctx context.Context, id domain.SessionID, message string) (string, domain.SessionRecord, error) {
 	rec, ok, err := m.store.GetSession(ctx, id)
 	if err != nil {
-		return "", fmt.Errorf("send %s: session: %w", id, err)
+		return "", domain.SessionRecord{}, fmt.Errorf("send %s: session: %w", id, err)
 	}
 	if !ok {
-		return message, nil
+		return message, domain.SessionRecord{}, nil
 	}
 	if rec.Harness != domain.HarnessCopilot || rec.Kind != domain.KindOrchestrator {
-		return message, nil
+		return message, rec, nil
 	}
-	return copilotOrchestratorMessage(rec.ProjectID, message), nil
+	return copilotOrchestratorMessage(rec.ProjectID, message), rec, nil
 }
 
 func copilotOrchestratorMessage(projectID domain.ProjectID, message string) string {
