@@ -110,7 +110,7 @@ func (c *commandContext) mergePR(ctx context.Context, cmd *cobra.Command, ref st
 func newPRResolveCommentsCommand(ctx *commandContext) *cobra.Command {
 	return &cobra.Command{
 		Use:   "resolve-comments <pr-number> [comment-id...]",
-		Short: "Resolve review threads on a pull request",
+		Short: "Resolve review threads on a pull request (by comment or thread id)",
 		Args:  usageArgs(cobra.MinimumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			prNumber, err := normalizePRNumber(args[0])

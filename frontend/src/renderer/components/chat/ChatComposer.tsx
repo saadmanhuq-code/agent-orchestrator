@@ -145,6 +145,7 @@ export const ChatComposer = memo(function ChatComposer({
 	disabledPlaceholder,
 	settings,
 	approval,
+	elicitation,
 	skills = [],
 	filePaths = [],
 	filePathsTruncated,
@@ -187,6 +188,8 @@ export const ChatComposer = memo(function ChatComposer({
 	settings?: ReactNode;
 	/** A provider decision that temporarily replaces ordinary message entry. */
 	approval?: ReactNode;
+	/** A provider question, docked above the composer until it is answered. */
+	elicitation?: ReactNode;
 	/** A send is in flight. */
 	busy?: boolean;
 	/** The agent is mid-turn, so this message is held until the turn ends. */
@@ -1080,7 +1083,12 @@ export const ChatComposer = memo(function ChatComposer({
 		}
 		if (!draftScope || savingQueuedEdit) {
 			setSubmitting(true);
+			// A plain-text send has a local timeline echo — clear the editor immediately
+			// so the user sees one acknowledgement rather than their draft stranded until
+			// the daemon round-trip completes. Attachments retain the retry path.
+			const clearForLocalEcho = !shouldSteer && !savingQueuedEdit && nativePayloads.length === 0;
 			try {
+				if (clearForLocalEcho) clearEditorView();
 				if (shouldSteer && onSteer) {
 					const outcome = nativePayloads.length > 0
 						? await onSteer(message, nativePayloads)
@@ -1099,9 +1107,15 @@ export const ChatComposer = memo(function ChatComposer({
 				} else {
 					await onSend(message);
 				}
-				clearEditorView();
+				if (!clearForLocalEcho) clearEditorView();
 				fileAttachments.clear();
 			} catch (error) {
+				if (clearForLocalEcho) {
+					textRef.current = currentText;
+					hasTextRef.current = currentText.trim().length > 0;
+					setHasText(hasTextRef.current);
+					editor.current?.setText(currentText);
+				}
 				setSendError(
 					savingQueuedEdit
 						? apiErrorMessage(error, "chat.draft.queueSaveFailed")
@@ -1358,6 +1372,14 @@ export const ChatComposer = memo(function ChatComposer({
 					{queuedDockWithSteer}
 				</div>
 				) : null}
+				{elicitation ? (
+					<div
+						className="queue-dock-enter relative z-10 mx-auto mb-2 w-[calc(100%-2rem)]"
+						data-testid="elicitation-composer-dock"
+					>
+						{elicitation}
+					</div>
+				) : null}
 				{form}
 			</div>
 		);
@@ -1366,7 +1388,7 @@ export const ChatComposer = memo(function ChatComposer({
 		return withQueueStack(
 			<form
 				onSubmit={(event) => event.preventDefault()}
-				data-attached-top={attachedTop && !queuedDock ? true : undefined}
+				data-attached-top={attachedTop && !queuedDock && !elicitation ? true : undefined}
 				className="cursor-chat-composer relative flex flex-col gap-1.5 border px-3 py-3"
 			>
 				{approval}
@@ -1394,7 +1416,7 @@ export const ChatComposer = memo(function ChatComposer({
 				// on one surface, so they are declared together in CSS rather than half
 				// here and half there.
 				data-dragging={dragging || undefined}
-				data-attached-top={attachedTop && !queuedDock ? true : undefined}
+				data-attached-top={attachedTop && !queuedDock && !elicitation ? true : undefined}
 				onClick={(e) => {
 					if (controlsDisabled) return;
 					if (

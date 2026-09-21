@@ -24,6 +24,7 @@ import type {
   WorkspaceSession,
   WorkspaceSummary,
 } from "../types/workspace";
+import { STANDALONE_WORKSPACE_ID } from "../types/workspace";
 
 const { getMock, navigateMock, patchMock, putMock, postMock } = vi.hoisted(
   () => ({
@@ -37,6 +38,18 @@ const { getMock, navigateMock, patchMock, putMock, postMock } = vi.hoisted(
 
 function postCallsFor(path: string) {
   return postMock.mock.calls.filter(([calledPath]) => calledPath === path);
+}
+
+function mockPostsWithResponse(response: unknown) {
+  postMock.mockImplementation(async (path: string) => {
+    if (path === "/api/v1/agents/readiness/ensure") {
+      const agents = ["claude-code", "codex", "opencode"].map((id) =>
+        agentReadiness(id),
+      );
+      return { data: { agents } };
+    }
+    return response;
+  });
 }
 
 function setRenderedOverflow(element: HTMLElement, overflowing: boolean) {
@@ -277,7 +290,7 @@ beforeEach(() => {
   navigateMock.mockReset();
   patchMock.mockReset();
   postMock.mockReset();
-  useUiStore.setState({ developerMode: false, inspectorSessions: {} });
+  useUiStore.setState({ developerMode: false, inspectorSessions: {}, settingsModal: null });
   putMock.mockReset();
   mockCommonGets();
   patchMock.mockResolvedValue({
@@ -285,7 +298,7 @@ beforeEach(() => {
     error: undefined,
     response: { status: 200 },
   });
-  postMock.mockResolvedValue({
+  mockPostsWithResponse({
     data: { ok: true, sessionId: "sess-1" },
     error: undefined,
   });
@@ -301,6 +314,15 @@ afterEach(() => {
 });
 
 describe("SessionInspector tabs", () => {
+  it("shows only Browser content without navigation tabs for an orchestrator", () => {
+    renderWithQuery(<SessionInspector browserOnly session={session([], { kind: "orchestrator" })} />);
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+    expect(screen.getByText("Browser")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Summary" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Files" })).not.toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Session inspector" }).querySelector(".session-inspector__body--browser")).toBeInTheDocument();
+  });
+
   it("gives the Browser viewport the full inspector body without the default content gutter", async () => {
     renderWithQuery(<SessionInspector session={session([])} />);
 
@@ -374,6 +396,7 @@ describe("SessionInspector tabs", () => {
 
     const filesTab = screen.getByRole("tab", { name: "Files" });
     expect(within(filesTab).getByText("Files")).toBeInTheDocument();
+    expect(within(filesTab).getByTestId("files-viewer-icon")).toBeInTheDocument();
     await waitFor(() =>
       expect(getMock).toHaveBeenCalledWith(
         "/api/v1/sessions/{sessionId}/workspace/files",
@@ -609,6 +632,53 @@ describe("SessionInspector PR section", () => {
             ci: { autoInjectCI: true, state: "passing", failingChecks: [] },
             review: { decision: "approved", hasUnresolvedHumanComments: false, unresolvedBy: [] },
             mergeability: { state: "mergeable", reasons: [], prUrl: "https://example.com/pr/7" },
+          }),
+        ]);
+      },
+    );
+    expect(screen.queryByRole("button", { name: "Merge PR #7" })).not.toBeInTheDocument();
+  });
+
+  it("offers Merge when the provider requires no review", () => {
+    renderWithQuery(
+      <SessionInspector session={session([pr(7, "open", { review: "none" })])} />,
+      undefined,
+      (client) => {
+        client.setQueryData(sessionScmSummaryQueryKey("sess-1"), [prSummary(7, "open")]);
+      },
+    );
+
+    expect(screen.getByRole("button", { name: "Merge PR #7" })).toBeEnabled();
+    expect(prSection("Pull request").getByText("No review required")).toBeInTheDocument();
+    expect(prSection("Pull request").queryByText("Review pending")).not.toBeInTheDocument();
+  });
+
+  it.each(["review_required", "changes_requested"] as const)(
+    "does not offer Merge when the review decision is %s",
+    (decision) => {
+      renderWithQuery(
+        <SessionInspector session={session([pr(7, "open")])} />,
+        undefined,
+        (client) => {
+          client.setQueryData(sessionScmSummaryQueryKey("sess-1"), [
+            prSummary(7, "open", {
+              review: { decision, hasUnresolvedHumanComments: false, unresolvedBy: [] },
+            }),
+          ]);
+        },
+      );
+      expect(screen.queryByRole("button", { name: "Merge PR #7" })).not.toBeInTheDocument();
+    },
+  );
+
+  it("does not offer Merge while human review comments are unresolved", () => {
+    renderWithQuery(
+      <SessionInspector session={session([pr(7, "open")])} />,
+      undefined,
+      (client) => {
+        client.setQueryData(sessionScmSummaryQueryKey("sess-1"), [
+          prSummary(7, "open", {
+            review: { decision: "none", hasUnresolvedHumanComments: true, unresolvedBy: [] },
           }),
         ]);
       },
@@ -1147,6 +1217,45 @@ describe("SessionInspector completion controls", () => {
       to: "/projects/$projectId/sessions/$sessionId",
       params: { projectId: "ws-1", sessionId: "orch-1" },
     });
+  });
+
+  it("shows only direct termination controls for ad hoc sessions", async () => {
+    renderWithQuery(
+      <SessionInspector
+        session={session([], {
+          workspaceId: STANDALONE_WORKSPACE_ID,
+          workspaceName: "Scratchpad",
+          status: "idle",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Session controls")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", { name: "Automatically fix CI failures" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", { name: "Automatically fix review comments" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", {
+        name: "Terminate session when pull requests merge",
+      }),
+    ).not.toBeInTheDocument();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Terminate session" }),
+    );
+    await userEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Yes, terminate session",
+      }),
+    );
+
+    expect(postMock).toHaveBeenCalledWith("/api/v1/sessions/{sessionId}/kill", {
+      params: { path: { sessionId: "sess-1" } },
+    });
+    expect(navigateMock).toHaveBeenCalledWith({ to: "/" });
   });
 
   it("keeps the confirmation dismissed after a termination failure", async () => {
@@ -1927,6 +2036,35 @@ describe("SessionInspector summary reviews", () => {
     });
     expect(trigger).toHaveTextContent("Claude Code");
     expect(trigger).not.toHaveTextContent("claude-code");
+  });
+
+  it("opens Harness from the reviewer menu for its unavailable selection", async () => {
+    const responder = commonGetsResponder();
+    getMock.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/agents/readiness") {
+        return {
+          data: {
+            agents: [
+              agentReadiness("claude-code", "Claude Code"),
+              agentReadiness("codex", "Codex", { authentication: "unauthorized" }),
+            ],
+          },
+        };
+      }
+      return responder(path);
+    });
+
+    renderWithQuery(<SessionInspector session={session([pr(3, "open")])} />);
+    await openReviewsSection();
+    await userEvent.click(await screen.findByRole("button", { name: /Select reviewer agent/ }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Manage agents…" }));
+    await waitFor(() => expect(useUiStore.getState().settingsModal).not.toBeNull());
+
+    expect(useUiStore.getState().settingsModal).toEqual({
+      scope: "global",
+      section: "harness",
+      focusAgentId: "codex",
+    });
   });
 
   it("configures session auto-review and disables manual controls", async () => {
@@ -2904,7 +3042,7 @@ describe("SessionInspector summary reviews", () => {
     mockCommonGets([], "reviewer-pane", [
       reviewState(3, "needs_review", "sha-1"),
     ]);
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       response: { status: 201 },
     });
@@ -2961,7 +3099,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3017,7 +3155,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3072,7 +3210,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3134,7 +3272,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3180,7 +3318,7 @@ describe("SessionInspector summary reviews", () => {
       }
       return commonGetsResponder([], "reviewer-pane", [reviewState(3, "needs_review", "sha-1")])(path);
     });
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       error: undefined,
       response: { status: 200 },
@@ -3293,7 +3431,7 @@ describe("SessionInspector summary reviews", () => {
     mockCommonGets([], "reviewer-pane", [
       reviewState(3, "needs_review", "sha-1"),
     ]);
-    postMock.mockResolvedValue({
+    mockPostsWithResponse({
       data: { reviewerHandleId: "", reviews: [] },
       response: { status: 201 },
     });

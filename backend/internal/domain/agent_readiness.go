@@ -59,13 +59,16 @@ type AgentReadinessPurpose string
 const (
 	// AgentReadinessPurposeDisplay selects the five-minute display policy.
 	AgentReadinessPurposeDisplay AgentReadinessPurpose = "display"
+	// AgentReadinessPurposeSettings keeps installation checks inexpensive while
+	// refreshing authentication for a visible Settings page.
+	AgentReadinessPurposeSettings AgentReadinessPurpose = "settings"
 	// AgentReadinessPurposeLaunch selects the thirty-second launch policy.
 	AgentReadinessPurposeLaunch AgentReadinessPurpose = "launch"
 )
 
 // Valid reports whether the purpose selects a supported freshness policy.
 func (p AgentReadinessPurpose) Valid() bool {
-	return p == AgentReadinessPurposeDisplay || p == AgentReadinessPurposeLaunch
+	return p == AgentReadinessPurposeDisplay || p == AgentReadinessPurposeSettings || p == AgentReadinessPurposeLaunch
 }
 
 // Stable, safe reason codes exposed through the daemon API.
@@ -74,6 +77,7 @@ const (
 	AgentReadinessReasonChecking                = "checking"
 	AgentReadinessReasonInstalled               = "installed"
 	AgentReadinessReasonNotInstalled            = "not_installed"
+	AgentReadinessReasonInstallIdentityPending  = "install_identity_pending"
 	AgentReadinessReasonInstallCheckUnsupported = "install_check_unsupported"
 	AgentReadinessReasonInstallCheckTimeout     = "install_check_timeout"
 	AgentReadinessReasonInstallCheckFailed      = "install_check_failed"

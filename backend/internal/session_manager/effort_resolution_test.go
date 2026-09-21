@@ -46,7 +46,7 @@ func TestEffortResolutionOrder(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := applySpawnAgentConfig(effectiveAgentConfig(tc.kind, project), tc.spawn)
+			got := applySpawnAgentConfig(effectiveAgentConfig(domain.HarnessClaudeCode, tc.kind, project), tc.spawn)
 			if got.Effort != tc.want {
 				t.Fatalf("resolved effort = %q, want %q", got.Effort, tc.want)
 			}
@@ -58,7 +58,7 @@ func TestEffortResolutionOrder(t *testing.T) {
 // every existing launch command unchanged.
 func TestEffortDefaultsToUnset(t *testing.T) {
 	got := applySpawnAgentConfig(
-		effectiveAgentConfig(domain.KindWorker, domain.ProjectConfig{}),
+		effectiveAgentConfig(domain.HarnessClaudeCode, domain.KindWorker, domain.ProjectConfig{}),
 		domain.AgentConfig{},
 	)
 	if got.Effort != "" {

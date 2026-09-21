@@ -241,6 +241,18 @@ export function WorkspaceReviewPane({
 		}
 		return result;
 	}, [patchQueries]);
+	// A batch still in flight (or still queued behind activeBatchCount) is the
+	// only reason a requested file can legitimately have no patch yet. Once its
+	// batch settles, a file with no diff is a failure the user can retry or step
+	// around, not a load that will finish on its own.
+	const pendingDiffPaths = useMemo(() => {
+		const result = new Set<string>();
+		batches.forEach((paths, index) => {
+			const query = patchQueries[index];
+			if (!query || query.isPending || query.isFetching) for (const path of paths) result.add(path);
+		});
+		return result;
+	}, [batches, patchQueries]);
 
 	const summaryById = useMemo(() => new Map(files.map((file) => [`${reviewSelectionKey}:${file.path}`, file])), [files, reviewSelectionKey]);
 	const items = useMemo<CodeViewItem<"feedback">[]>(
@@ -317,6 +329,12 @@ export function WorkspaceReviewPane({
 		if (annotation.target?.surface === "review") annotation.cancel();
 		setCollapsedPaths(new Set(files.map((file) => file.path)));
 	}, [annotation, files]);
+	const expandAll = useCallback(() => {
+		setLoadedDeferredPaths(new Set(files.filter(isDeferredByDefault).map((file) => file.path)));
+		setCollapsedPaths(new Set());
+	}, [files]);
+	const allFilesCollapsed = files.length > 0 && files.every((file) => collapsedPaths.has(file.path));
+	const toggleAll = allFilesCollapsed ? expandAll : collapseAll;
 	const selectCommit = useCallback((commit: WorkspaceCommitSummary) => {
 		if ((scope !== "committed" || selectedCommitSha !== commit.sha) && annotation.target?.surface === "review") annotation.cancel();
 		setSelectedCommitSha(commit.sha);
@@ -372,14 +390,10 @@ export function WorkspaceReviewPane({
 				</Button>
 				{!commitBrowserOpen ? <div className="ml-auto flex items-center gap-1 text-caption text-muted-foreground">
 					<span>{t("files.reviewProgress", { total: allFiles.length, viewed: viewedCount })}</span>
-					<HeaderActionTooltip label={t("files.collapseAll")}>
-						<Button aria-label={t("files.collapseAll")} onClick={collapseAll} size="icon-sm" type="button" variant="ghost"><ChevronsDownUp aria-hidden="true" /></Button>
-					</HeaderActionTooltip>
-					<HeaderActionTooltip label={t("files.expandAll")}>
-						<Button aria-label={t("files.expandAll")} onClick={() => {
-							setLoadedDeferredPaths(new Set(files.filter(isDeferredByDefault).map((file) => file.path)));
-							setCollapsedPaths(new Set());
-						}} size="icon-sm" type="button" variant="ghost"><ChevronsUpDown aria-hidden="true" /></Button>
+					<HeaderActionTooltip label={t(allFilesCollapsed ? "files.expandAll" : "files.collapseAll")}>
+						<Button aria-label={t(allFilesCollapsed ? "files.expandAll" : "files.collapseAll")} onClick={toggleAll} size="icon-sm" type="button" variant="ghost">
+							{allFilesCollapsed ? <ChevronsUpDown aria-hidden="true" /> : <ChevronsDownUp aria-hidden="true" />}
+						</Button>
 					</HeaderActionTooltip>
 				</div> : <span className="ml-auto text-caption text-muted-foreground">{t("files.selectCommit")}</span>}
 			</div>
@@ -504,11 +518,14 @@ export function WorkspaceReviewPane({
 				{files.filter((file) => file.binary || !metadataByPath.has(file.path)).map((file) => {
 					const deferred = isDeferredByDefault(file) && !loadedDeferredPaths.has(file.path);
 					const serverDeferredReason = serverDeferredByPath.get(file.path);
+					const pending = pendingDiffPaths.has(file.path);
+					const unavailable = !file.binary && !deferred && !serverDeferredReason && !pending;
 					return (
 					<div className="m-2 flex items-center gap-2 rounded-md border border-border bg-surface p-3" key={file.path}>
 						<FileCode2 aria-hidden="true" className="text-passive" />
-						<div className="min-w-0 flex-1"><p className="truncate font-mono text-xs">{file.path}</p><p className="text-caption text-muted-foreground">{file.binary ? t("files.binaryUnavailable") : deferred ? t("files.deferredDiff") : serverDeferredReason ? t("files.diffUnavailableReason", { reason: serverDeferredReason }) : t("files.loadingDiff")}</p></div>
+						<div className="min-w-0 flex-1"><p className="truncate font-mono text-xs">{file.path}</p><p className="text-caption text-muted-foreground">{file.binary ? t("files.binaryUnavailable") : deferred ? t("files.deferredDiff") : serverDeferredReason ? t("files.diffUnavailableReason", { reason: serverDeferredReason }) : pending ? t("files.loadingDiff") : t("files.diffUnavailable")}</p></div>
 						{deferred ? <Button onClick={() => setLoadedDeferredPaths((current) => new Set(current).add(file.path))} size="sm" type="button" variant="outline">{t("files.loadDiff")}</Button> : null}
+						{unavailable ? <RetryButton onClick={retryAll} /> : null}
 						<Button onClick={() => onOpenFile?.(file.path, { ...fileOpenContext, mode: "file" })} size="sm" type="button" variant="outline">{t("files.fileView")}</Button>
 					</div>
 					);

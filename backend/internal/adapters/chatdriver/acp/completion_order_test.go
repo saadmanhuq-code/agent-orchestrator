@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 	acpsdk "github.com/coder/acp-go-sdk"
 )
@@ -28,13 +29,14 @@ func TestCompletionAllowsImmediateNextTurn(t *testing.T) {
 				}
 				c.finishPrompt("previous", acpsdk.PromptResponse{StopReason: acpsdk.StopReasonEndTurn}, promptErr)
 			}()
-			if failed {
-				if event := nextEvent(t, c.Events()); event.Kind != ports.ChatEventError {
-					t.Errorf("event = %s, want error", event.Kind)
-				}
+			// A failed turn carries the error on its completion event; no separate
+			// error event precedes it.
+			event := nextEvent(t, c.Events())
+			if event.Kind != ports.ChatEventTurnCompleted {
+				t.Fatalf("event = %s, want turn completed", event.Kind)
 			}
-			if event := nextEvent(t, c.Events()); event.Kind != ports.ChatEventTurnCompleted {
-				t.Errorf("event = %s, want turn completed", event.Kind)
+			if failed && (event.TurnState != domain.TurnStateFailed || event.Err == nil) {
+				t.Errorf("completion = state %s err %v, want failed turn carrying the error", event.TurnState, event.Err)
 			}
 			ref, err := c.SendTurn(context.Background(), ports.ChatUserMessage{Text: "next"})
 			if err != nil {

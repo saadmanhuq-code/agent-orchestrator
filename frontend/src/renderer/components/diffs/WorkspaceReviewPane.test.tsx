@@ -16,7 +16,7 @@ vi.mock("../../lib/api-client", () => ({
 }));
 
 vi.mock("@pierre/diffs", () => ({
-	parsePatchFiles: (patch: string) => [{ files: [{ name: patch.includes("README.md") ? "README.md" : "src/App.tsx", type: "changed" }] }],
+	parsePatchFiles: (patch: string) => patch ? [{ files: [{ name: patch.includes("README.md") ? "README.md" : "src/App.tsx", type: "changed" }] }] : [],
 }));
 
 vi.mock("@pierre/diffs/react", () => ({
@@ -48,6 +48,15 @@ function workspace(files: WorkspaceFilesResponse["files"]): WorkspaceFilesRespon
 		summary: { additions: 1, deletions: 1, files: files.length },
 		truncated: false,
 	};
+}
+
+// A workspace project (multi-repository) session leaves every git-state section
+// and the commit list empty, so its review can only ask for the combined scope.
+function workspaceProject(files: WorkspaceFilesResponse["files"]): WorkspaceFilesResponse {
+	const data = workspace([]);
+	data.files = files;
+	data.summary.files = files.length;
+	return data;
 }
 
 function committedWorkspace(files: WorkspaceFilesResponse["files"]): WorkspaceFilesResponse {
@@ -117,6 +126,21 @@ describe("WorkspaceReviewPane", () => {
 		expect(screen.getByTestId("code-view").querySelector("[data-collapsed]"))?.toHaveAttribute("data-collapsed", "true");
 		await userEvent.click(screen.getAllByRole("button", { name: "Expand src/App.tsx" })[1]);
 		expect(screen.getByTestId("code-view").querySelector("[data-collapsed]"))?.toHaveAttribute("data-collapsed", "false");
+	});
+
+	it("uses one toggle for collapsing and expanding all files", async () => {
+		const data = committedWorkspace([{ path: "src/App.tsx", status: "modified", additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "file-1" }]);
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} sessionId="sess-1" split={false} />);
+		expect(await screen.findByTestId("code-view")).toBeInTheDocument();
+
+		const toggle = screen.getByRole("button", { name: "Collapse all files" });
+		await userEvent.click(toggle);
+		expect(screen.getByRole("button", { name: "Expand all files" })).toBeInTheDocument();
+		expect(screen.getByTestId("code-view").querySelectorAll('[data-collapsed="true"]')).toHaveLength(1);
+
+		await userEvent.click(screen.getByRole("button", { name: "Expand all files" }));
+		expect(screen.getByRole("button", { name: "Collapse all files" })).toBeInTheDocument();
+		expect(screen.getByTestId("code-view").querySelectorAll('[data-collapsed="false"]')).toHaveLength(1);
 	});
 
 	it("closes a file's feedback composer when that file is collapsed", async () => {
@@ -347,6 +371,33 @@ describe("WorkspaceReviewPane", () => {
 
 		await waitFor(() => expect(postMock).toHaveBeenCalled());
 		expect(postMock.mock.calls[0]?.[1]?.body.paths).toEqual(["src/App.tsx"]);
+	});
+
+	it("renders a child repository diff and offers retry for a file its settled group left out", async () => {
+		const data = workspaceProject([
+			{ path: "alpha/README.md", status: "modified", additions: 1, deletions: 1, size: 20, binary: false, fileFingerprint: "alpha-1" },
+			{ path: "beta/workspace-test.txt", status: "added", additions: 1, deletions: 0, size: 20, binary: false, fileFingerprint: "beta-1" },
+		]);
+		const onOpenFile = vi.fn();
+		postMock.mockResolvedValue({
+			data: {
+				sessionId: "sess-1",
+				workspaceVersion: "workspace-1",
+				groups: [
+					{ repository: "alpha", patch: "diff --git a/README.md b/README.md\n", truncated: false, includedPaths: ["alpha/README.md"], deferred: [] },
+					{ repository: "beta", patch: "", truncated: false, includedPaths: ["beta/workspace-test.txt"], deferred: [] },
+				],
+			},
+		});
+		renderWithQuery(<WorkspaceReviewPane annotation={annotation()} data={data} filter="" onBrowseAll={vi.fn()} onOpenFile={onOpenFile} sessionId="sess-1" split={false} />);
+
+		expect(await screen.findByText("alpha/README.md")).toBeInTheDocument();
+		expect(await screen.findByText("Unable to load this diff.")).toBeInTheDocument();
+		expect(screen.queryByText("Loading diff...")).not.toBeInTheDocument();
+		await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+		await waitFor(() => expect(postMock).toHaveBeenCalledTimes(2));
+		await userEvent.click(screen.getByRole("button", { name: "File" }));
+		expect(onOpenFile).toHaveBeenCalledWith("beta/workspace-test.txt", expect.objectContaining({ mode: "file", scope: "combined" }));
 	});
 
 	it("defers lockfile patches until the user explicitly loads them", async () => {
